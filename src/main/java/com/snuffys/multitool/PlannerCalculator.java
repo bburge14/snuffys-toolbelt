@@ -49,6 +49,8 @@ class PlannerCalculator {
     private static final String BONUS_KEY = "plannerCalcBonus.";
     private static final String BANKED_KEY = "plannerCalcBanked";
     private static final String PLAN_VIEW_KEY = "plannerCalcPlan";
+    private static final String TARGET_KEY = "plannerCalcTarget.";
+    private static final String DOCK_KEY = "plannerCalcDockOpen";
 
     /** The list's three views. */
     enum Mode { ACTIONS, BANKED, PLAN }
@@ -75,6 +77,8 @@ class PlannerCalculator {
     private boolean bankLoaded;
     // For the preview: whether the Skilling Helper is "installed"
     private Boolean sampleTracker;
+    // Typed targets when there's no profile to keep them in (the preview, logged out)
+    private final Map<Skill, Integer> sampleTargets = new EnumMap<>(Skill.class);
 
     @Inject
     PlannerCalculator(Client client, ConfigManager configManager, ItemManager itemManager, PlannerView view,
@@ -135,7 +139,8 @@ class PlannerCalculator {
             if (event.getKey().equals(SkillGoals.BANK_KEY)) {
                 bankLoaded = false;
                 dirty = true;
-            } else if (event.getKey().startsWith("goal") || event.getKey().startsWith(SkillPlans.PLAN_KEY)) {
+            } else if (event.getKey().startsWith("goal") || event.getKey().startsWith(SkillPlans.PLAN_KEY)
+                || event.getKey().startsWith(SkillPlans.PLANS_KEY) || event.getKey().startsWith(SkillPlans.OPEN_KEY)) {
                 // A goal set (or plan exported or removed) in the Skilling Helper or here: the target follows it
                 view.update();
             }
@@ -280,10 +285,73 @@ class PlannerCalculator {
         return configManager.getRSProfileKey() == null ? 0 : SkillGoals.goalStart(configManager, skill);
     }
 
+    /**
+     * What the goal is set to train in the Skilling Helper: its Track for goal pick ("Blessed bone shards") or the
+     * method picked on its card; null for neither (it follows the suggestion, or an exported plan).
+     */
+    String goalPick(Skill skill) {
+        if (!canPlan()) {
+            return null;
+        }
+        String target = configManager.getRSProfileConfiguration(GROUP, "goalTarget." + skill.name());
+        if (target != null && !target.isEmpty()) {
+            String name = target.substring(target.indexOf(':') + 1).split("\\|", -1)[0].trim();
+            return name.isEmpty() ? null : Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        }
+        String method = configManager.getRSProfileConfiguration(GROUP, "goalMethod." + skill.name());
+        return method == null || method.isEmpty() ? null : method;
+    }
+
     /** Sets the skill's goal as the tracker's Set Goal does (its goal bar starts from your XP now). */
     void setGoal(Skill skill, int goalXp, int xpNow) {
         if (configManager.getRSProfileKey() != null) {
             SkillGoals.setGoal(configManager, skill, goalXp, xpNow);
+        }
+    }
+
+    /** Whether the open plan is unfolded in the Plan view (it starts unfolded). */
+    boolean planExpanded() {
+        return !"false".equals(configManager.getConfiguration(GROUP, "plannerCalcPlanExpanded"));
+    }
+
+    void setPlanExpanded(boolean expanded) {
+        configManager.setConfiguration(GROUP, "plannerCalcPlanExpanded", expanded);
+    }
+
+    /** Whether the plan bar at the foot of the Calculator is open (it starts open). */
+    boolean dockOpen() {
+        return !"false".equals(configManager.getConfiguration(GROUP, DOCK_KEY));
+    }
+
+    void setDockOpen(boolean open) {
+        configManager.setConfiguration(GROUP, DOCK_KEY, open);
+    }
+
+    /** The target you typed for this skill (kept until you reset it or set it as the goal), or 0 for none. */
+    int savedTarget(Skill skill) {
+        if (configManager.getRSProfileKey() == null) {
+            return sampleTargets.getOrDefault(skill, 0);
+        }
+        try {
+            String saved = configManager.getRSProfileConfiguration(GROUP, TARGET_KEY + skill.name());
+            return saved == null ? 0 : Math.max(0, Integer.parseInt(saved));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** Keeps this target for the skill (0 forgets it). */
+    void setSavedTarget(Skill skill, int xp) {
+        if (configManager.getRSProfileKey() == null) {
+            if (xp > 0) {
+                sampleTargets.put(skill, xp);
+            } else {
+                sampleTargets.remove(skill);
+            }
+        } else if (xp > 0) {
+            configManager.setRSProfileConfiguration(GROUP, TARGET_KEY + skill.name(), xp);
+        } else {
+            configManager.unsetRSProfileConfiguration(GROUP, TARGET_KEY + skill.name());
         }
     }
 
@@ -353,15 +421,96 @@ class PlannerCalculator {
         return configManager.getRSProfileKey() != null;
     }
 
-    /** The skill's plan as made here, or null. */
-    SkillPlans.Plan plan(Skill skill) {
-        return canPlan() ? SkillPlans.plan(configManager, skill) : null;
+    /** The skill's saved plans (copies: change them through the methods here). */
+    List<SkillPlans.Plan> plans(Skill skill) {
+        return canPlan() ? SkillPlans.plans(configManager, skill) : new ArrayList<>();
     }
 
+    /** Which of {@link #plans} is open, or -1 when there are none. */
+    int openIndex(Skill skill) {
+        return canPlan() ? SkillPlans.open(configManager, skill, plans(skill).size()) : -1;
+    }
+
+    /** The open plan (the one being edited, that Add to plan adds to), or null when there are none. */
+    SkillPlans.Plan plan(Skill skill) {
+        List<SkillPlans.Plan> plans = plans(skill);
+        int open = canPlan() ? SkillPlans.open(configManager, skill, plans.size()) : -1;
+        return open < 0 ? null : plans.get(open);
+    }
+
+    /** Saves the open plan (a new one when there are none); null deletes it, opening the one before it. */
     void savePlan(Skill skill, SkillPlans.Plan plan) {
-        if (canPlan()) {
-            SkillPlans.savePlan(configManager, skill, plan == null || plan.steps.isEmpty() && plan.goal <= 0 ? null : plan);
+        if (!canPlan()) {
+            return;
         }
+        List<SkillPlans.Plan> plans = plans(skill);
+        int open = SkillPlans.open(configManager, skill, plans.size());
+        if (plan == null) {
+            if (open >= 0) {
+                plans.remove(open);
+            }
+            SkillPlans.savePlans(configManager, skill, plans, Math.max(0, open - 1));
+        } else if (open < 0) {
+            plans.add(plan);
+            SkillPlans.savePlans(configManager, skill, plans, 0);
+        } else {
+            plans.set(open, plan);
+            SkillPlans.savePlans(configManager, skill, plans, open);
+        }
+    }
+
+    /** Adds a plan and opens it. */
+    void newPlan(Skill skill, SkillPlans.Plan plan) {
+        if (canPlan()) {
+            List<SkillPlans.Plan> plans = plans(skill);
+            plans.add(plan);
+            SkillPlans.savePlans(configManager, skill, plans, plans.size() - 1);
+        }
+    }
+
+    /** Opens one of the saved plans. */
+    void openPlan(Skill skill, int index) {
+        if (canPlan()) {
+            SkillPlans.savePlans(configManager, skill, plans(skill), index);
+        }
+    }
+
+    /** Deletes one of the saved plans (the open one stays open, or the one before it if it was this). */
+    void deletePlan(Skill skill, int index) {
+        if (!canPlan()) {
+            return;
+        }
+        List<SkillPlans.Plan> plans = plans(skill);
+        if (index < 0 || index >= plans.size()) {
+            return;
+        }
+        int open = SkillPlans.open(configManager, skill, plans.size());
+        plans.remove(index);
+        SkillPlans.savePlans(configManager, skill, plans, open > index ? open - 1 : open == index ? Math.max(0, index - 1) : open);
+    }
+
+    /** Replaces one of the saved plans (renamed), keeping which is open. */
+    void replacePlan(Skill skill, int index, SkillPlans.Plan plan) {
+        if (!canPlan()) {
+            return;
+        }
+        List<SkillPlans.Plan> plans = plans(skill);
+        if (index >= 0 && index < plans.size()) {
+            plans.set(index, plan);
+            SkillPlans.savePlans(configManager, skill, plans, SkillPlans.open(configManager, skill, plans.size()));
+        }
+    }
+
+    /** The skills with saved plans (for the list of other skills' plans), and how many each has. */
+    Map<Skill, Integer> planCounts(List<Skill> skills) {
+        Map<Skill, Integer> out = new java.util.LinkedHashMap<>();
+        for (Skill skill : skills) {
+            int count = plans(skill).size();
+            if (count > 0) {
+                out.put(skill, count);
+            }
+        }
+        return out;
     }
 
     /** The plan exported to the tracker for this skill, or null. */
@@ -486,11 +635,14 @@ class PlannerCalculator {
         List<RecipeData.Recipe> made = recipes == null ? Collections.emptyList() : recipesFor(skill, action, recipes);
         if (!made.isEmpty()) {
             for (RecipeData.Recipe recipe : made) {
-                row.have = Math.max(row.have, recipe.makeable(have));
+                int per = perMake(recipe, action);
+                row.have = Math.max(row.have, recipe.makeable(have) * per);
                 Double cost = cost(recipe, price);
                 if (cost == null) {
                     continue;
                 }
+                // The action is one item; a recipe can make several at once (10 darts from 10 tips and 10 feathers)
+                cost /= per;
                 double worth = consumed(recipe) ? 0 : price.applyAsInt(recipe.name);
                 double profit = worth - cost;
                 if (row.profit == null || profit > row.profit) {
@@ -515,6 +667,18 @@ class PlannerCalculator {
             row.seconds = (long) Math.ceil((target - xp) * 3600.0 / method.xpHour);
         }
         return row;
+    }
+
+    /**
+     * How many of the action's items one go of the recipe makes: darts, arrows and bolts come 10 or 15 at a time
+     * (the recipe gives the XP of all of them, the Calculator's action one's). 1 for everything else.
+     */
+    static int perMake(RecipeData.Recipe recipe, CalculatorData.Action action) {
+        if (action.xp <= 0 || recipe.xp <= 0) {
+            return 1;
+        }
+        double ratio = recipe.xp / action.xp;
+        return ratio >= 1.5 ? (int) Math.round(ratio) : 1;
     }
 
     // A recipe that uses its item up rather than making something ("Burn logs", "Bury bones", "Scatter ashes")
@@ -604,6 +768,32 @@ class PlannerCalculator {
         return recipes.bankedXp(skill, level, have, xpOf(skill, calc, on, recipes));
     }
 
+    /**
+     * How many of each action {@link #bankedXp} counts (materials shared between actions used once, as there), or
+     * null for an action without recipes.
+     */
+    static Integer bankedTimes(Skill skill, CalculatorData.Action action, RecipeData recipes, Map<String, Integer> made) {
+        List<RecipeData.Recipe> mine = recipesFor(skill, action, recipes);
+        if (mine.isEmpty()) {
+            return null;
+        }
+        int times = 0;
+        // (several recipes can share a name, one per kind of feather: count each name once)
+        Set<String> counted = new java.util.HashSet<>();
+        for (RecipeData.Recipe recipe : mine) {
+            if (counted.add(recipe.name.toLowerCase())) {
+                times += made.getOrDefault(recipe.name.toLowerCase(), 0) * perMake(recipe, action);
+            }
+        }
+        return times;
+    }
+
+    /** Lower-case recipe name -> how many {@link #bankedXp} makes. */
+    static Map<String, Integer> bankedMade(Skill skill, CalculatorData.Calc calc, Collection<CalculatorData.Bonus> on, int level,
+                                           RecipeData recipes, Map<String, Integer> have) {
+        return recipes.bankedTimes(skill, level, have, xpOf(skill, calc, on, recipes));
+    }
+
     /** The GE value of what {@link #bankedXp} uses up (each item counted once, as there); 0 when nothing's priced. */
     static long bankedValue(Skill skill, CalculatorData.Calc calc, Collection<CalculatorData.Bonus> on, int level,
                             RecipeData recipes, Map<String, Integer> have, ToIntFunction<String> price) {
@@ -619,7 +809,8 @@ class PlannerCalculator {
         Map<String, Double> each = new HashMap<>();
         for (CalculatorData.Action action : calc.actions) {
             for (RecipeData.Recipe recipe : recipesFor(skill, action, recipes)) {
-                each.put(recipe.name.toLowerCase(Locale.ROOT), CalculatorData.xpEach(action, on));
+                // (a go of the recipe: all the items it makes at once)
+                each.put(recipe.name.toLowerCase(Locale.ROOT), CalculatorData.xpEach(action, on) * perMake(recipe, action));
             }
         }
         return r -> each.getOrDefault(r.name.toLowerCase(Locale.ROOT), r.xp);
@@ -725,28 +916,162 @@ class PlannerCalculator {
     }
 
     /**
-     * Adds a milestone for this action at the end of the plan: from where the last one ends (your level for the
-     * first), or from the action's level if that's later, the last milestone stretched or cut to meet it; up to the
-     * plan's goal. False when it can't fit (it would start at or past the goal).
+     * Adds a milestone for this action (right-click > Add to plan) from its own level (or yours, if later): inside a
+     * milestone, it takes over from there to where that one ended (Atlatl darts at 74 in Adamant darts 67-81: Adamant
+     * 67-74, Atlatl 74-81); in a gap, it fills it. One that would start where a milestone starts goes after the
+     * milestones there instead, so nothing is replaced. False when it can't fit before the plan's goal.
      */
     static boolean addStep(SkillPlans.Plan plan, CalculatorData.Action action, double xpEach, String method, int level) {
-        SkillPlans.Step last = plan.steps.isEmpty() ? null : plan.steps.get(plan.steps.size() - 1);
-        int start;
-        if (last == null) {
-            start = Math.max(Math.max(1, level), action.level);
-        } else if (last.to < plan.goal) {
-            start = Math.max(last.to, action.level);
+        int start = Math.max(Math.max(1, level), action.level);
+        SkillPlans.Step covering;
+        while (true) {
+            if (start >= plan.goal) {
+                return false;
+            }
+            covering = null;
+            for (SkillPlans.Step step : plan.steps) {
+                if (step.from <= start && start < step.to) {
+                    covering = step;
+                }
+            }
+            if (covering == null || covering.from < start) {
+                break;
+            }
+            start = covering.to;
+        }
+        int end = plan.goal;
+        if (covering != null) {
+            end = covering.to;
+            covering.to = start;
         } else {
-            start = Math.max(action.level, last.from + 1);
+            for (SkillPlans.Step step : plan.steps) {
+                if (step.from > start) {
+                    end = Math.min(end, step.from);
+                }
+            }
         }
-        if (start >= plan.goal) {
-            return false;
-        }
-        if (last != null) {
-            last.to = start;
-        }
-        plan.steps.add(new SkillPlans.Step(action.name, start, plan.goal, method, xpEach));
+        plan.steps.add(new SkillPlans.Step(action.name, start, end, method, xpEach));
+        plan.steps.sort((x, y) -> Integer.compare(x.from, y.from));
         return true;
+    }
+
+    /** A material (or tool) a plan needs: how many in all, and how many you have. */
+    static final class Need {
+        final String name;
+        long needed;
+        final int have;
+        final boolean tool;
+
+        Need(String name, long needed, int have, boolean tool) {
+            this.name = name;
+            this.needed = needed;
+            this.have = have;
+            this.tool = tool;
+        }
+
+        boolean enough() {
+            return have >= needed;
+        }
+    }
+
+    /**
+     * Everything the plan's milestones still need, added up: each milestone's actions to its end, in goes of its
+     * recipe (10 darts a go), times the recipe's materials; and the tools. For an action with several recipes (one per
+     * kind of feather) the one you have the most goes of. Gathering milestones need nothing. {@code owned}: lower-case
+     * names to how many you carry and bank.
+     */
+    static List<Need> planMaterials(Skill skill, List<StepRow> steps, RecipeData recipes, Map<String, Integer> owned) {
+        Map<String, Need> out = new java.util.LinkedHashMap<>();
+        for (StepRow s : steps) {
+            if (s.done || s.row == null || s.action == null || s.row.needed <= 0) {
+                continue;
+            }
+            RecipeData.Recipe best = null;
+            int bestGoes = -1;
+            for (RecipeData.Recipe recipe : recipesFor(skill, s.action, recipes)) {
+                int goes = recipe.makeable(owned);
+                if (goes > bestGoes) {
+                    best = recipe;
+                    bestGoes = goes;
+                }
+            }
+            if (best == null) {
+                continue;
+            }
+            int per = perMake(best, s.action);
+            long goes = (s.row.needed + per - 1) / per;
+            for (Map.Entry<String, Integer> material : best.materials.entrySet()) {
+                String key = material.getKey().toLowerCase(Locale.ROOT);
+                out.computeIfAbsent(key, k -> new Need(material.getKey(), 0, owned.getOrDefault(k, 0), false)).needed
+                    += goes * material.getValue();
+            }
+            for (String tool : best.tools) {
+                String key = "tool:" + tool.toLowerCase(Locale.ROOT);
+                out.computeIfAbsent(key, k -> new Need(tool, 1, ownsTool(owned, tool) ? 1 : 0, true));
+            }
+        }
+        return new ArrayList<>(out.values());
+    }
+
+    // A tool you have: any item named for it ("Hammer" in "Imcando hammer", "Knife")
+    private static boolean ownsTool(Map<String, Integer> owned, String tool) {
+        String t = tool.toLowerCase(Locale.ROOT);
+        for (Map.Entry<String, Integer> item : owned.entrySet()) {
+            if (item.getValue() > 0 && (item.getKey().equals(t) || item.getKey().endsWith(" " + t))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Puts a milestone in at its own levels: the ones it overlaps make room (cut short, cut off at the start, split in
+     * two around it, or gone when it covers them). The step may already be in the plan (one being edited).
+     */
+    static void insertStep(SkillPlans.Plan plan, SkillPlans.Step step) {
+        List<SkillPlans.Step> after = new ArrayList<>();
+        for (SkillPlans.Step other : plan.steps) {
+            if (other == step || other.to <= step.from || other.from >= step.to) {
+                continue;
+            }
+            if (other.from < step.from && other.to > step.to) {
+                // Around it: split, its second half after the new one
+                after.add(new SkillPlans.Step(other.action, step.to, other.to, other.method, other.xp));
+                other.to = step.from;
+            } else if (other.from < step.from) {
+                other.to = step.from;
+            } else {
+                other.from = step.to;
+            }
+        }
+        plan.steps.removeIf(other -> other != step && other.to <= other.from);
+        if (!plan.steps.contains(step)) {
+            plan.steps.add(step);
+        }
+        plan.steps.addAll(after);
+        plan.steps.sort((a, b) -> Integer.compare(a.from, b.from));
+        plan.goal = Math.max(plan.goal, step.to);
+    }
+
+    /**
+     * Changes the plan's final goal: milestones past it go, the rest stop at it; when it's raised, the last milestone
+     * that ended at the old goal doesn't stretch (raiseGoal leaves room for a new one after it).
+     */
+    static void setGoal(SkillPlans.Plan plan, int goal) {
+        int old = plan.goal;
+        raiseGoal(plan, goal);
+        if (!plan.steps.isEmpty() && goal > old && plan.steps.get(plan.steps.size() - 1).to == old) {
+            plan.steps.get(plan.steps.size() - 1).to = goal;
+        }
+    }
+
+    /** Sets the plan's goal, leaving the milestones' levels as they are (cut to it when it's lower). */
+    static void raiseGoal(SkillPlans.Plan plan, int goal) {
+        plan.goal = goal;
+        plan.steps.removeIf(step -> step.from >= goal);
+        for (SkillPlans.Step step : plan.steps) {
+            step.to = Math.min(step.to, goal);
+        }
     }
 
     /** Removes a milestone: the one before stretches over its levels, else the one after starts where it did. */
