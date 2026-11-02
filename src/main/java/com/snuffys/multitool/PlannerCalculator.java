@@ -127,6 +127,46 @@ class PlannerCalculator {
     @Subscribe
     public void onStatChanged(StatChanged event) {
         dirty = true;
+        // The skill you're training: the last to gain XP (not the login's report of every skill)
+        Integer before = seenXp.put(event.getSkill(), event.getXp());
+        if (before != null && event.getXp() > before) {
+            lastTrained = event.getSkill();
+        }
+    }
+
+    private final Map<Skill, Integer> seenXp = new EnumMap<>(Skill.class);
+    private volatile Skill lastTrained;
+
+    /** The skill whose open plan is pinned to the game screen (the plan overlay), or null: it follows your training. */
+    Skill pinnedPlanSkill() {
+        String saved = canPlan() ? configManager.getRSProfileConfiguration(GROUP, "plannerPinnedPlan") : null;
+        for (Skill skill : Skill.values()) {
+            if (skill.name().equals(saved)) {
+                return skill;
+            }
+        }
+        return null;
+    }
+
+    void setPinnedPlanSkill(Skill skill) {
+        if (!canPlan()) {
+            return;
+        }
+        if (skill == null) {
+            configManager.unsetRSProfileConfiguration(GROUP, "plannerPinnedPlan");
+        } else {
+            configManager.setRSProfileConfiguration(GROUP, "plannerPinnedPlan", skill.name());
+        }
+    }
+
+    /** The skill you last gained XP in (this session), or null. */
+    Skill lastTrained() {
+        return lastTrained;
+    }
+
+    /** For the preview: the skill being trained. */
+    void setSampleTrained(Skill skill) {
+        lastTrained = skill;
     }
 
     @Subscribe
@@ -298,12 +338,14 @@ class PlannerCalculator {
         return family != null && family.hasSkillTracker();
     }
 
+    // Goals are the Skilling Helper's: the Planner only reads or sets them while it runs too (installed and on), and
+    // never looks at them otherwise
     int goal(Skill skill) {
-        return configManager.getRSProfileKey() == null ? 0 : SkillGoals.goal(configManager, skill);
+        return configManager.getRSProfileKey() == null || !trackerInstalled() ? 0 : SkillGoals.goal(configManager, skill);
     }
 
     int goalStart(Skill skill) {
-        return configManager.getRSProfileKey() == null ? 0 : SkillGoals.goalStart(configManager, skill);
+        return configManager.getRSProfileKey() == null || !trackerInstalled() ? 0 : SkillGoals.goalStart(configManager, skill);
     }
 
     /**
@@ -311,7 +353,7 @@ class PlannerCalculator {
      * method picked on its card; null for neither (it follows the suggestion, or an exported plan).
      */
     String goalPick(Skill skill) {
-        if (!canPlan()) {
+        if (!canPlan() || !trackerInstalled()) {
             return null;
         }
         String target = configManager.getRSProfileConfiguration(GROUP, "goalTarget." + skill.name());
@@ -325,7 +367,7 @@ class PlannerCalculator {
 
     /** Sets the skill's goal as the tracker's Set Goal does (its goal bar starts from your XP now). */
     void setGoal(Skill skill, int goalXp, int xpNow) {
-        if (configManager.getRSProfileKey() != null) {
+        if (configManager.getRSProfileKey() != null && trackerInstalled()) {
             SkillGoals.setGoal(configManager, skill, goalXp, xpNow);
         }
     }
@@ -600,12 +642,12 @@ class PlannerCalculator {
 
     /** The plan exported to the tracker for this skill, or null. */
     SkillPlans.Plan trackedPlan(Skill skill) {
-        return canPlan() ? SkillPlans.tracked(configManager, skill) : null;
+        return canPlan() && trackerInstalled() ? SkillPlans.tracked(configManager, skill) : null;
     }
 
     /** Whether this plan is what the tracker has (exported and unchanged since). */
     boolean isTracked(Skill skill, SkillPlans.Plan plan) {
-        return canPlan() && SkillPlans.isTracked(configManager, skill, plan);
+        return canPlan() && trackerInstalled() && SkillPlans.isTracked(configManager, skill, plan);
     }
 
     void export(Skill skill, SkillPlans.Plan plan, int xpNow) {
@@ -622,7 +664,8 @@ class PlannerCalculator {
 
     /** The skill's own Training Focus from the shared group says "AFK / Other" (else the fastest methods). */
     boolean otherMethods(Skill skill) {
-        return canPlan() && "OTHER".equals(configManager.getRSProfileConfiguration(GROUP, "trainingFocus." + skill.name()));
+        return canPlan() && trackerInstalled()
+            && "OTHER".equals(configManager.getRSProfileConfiguration(GROUP, "trainingFocus." + skill.name()));
     }
 
     // ---- The sums ----

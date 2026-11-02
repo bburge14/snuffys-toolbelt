@@ -20,8 +20,6 @@ final class PlannerConfigDefaults {
         defaults.store("plannerWeekliesAlert", config.plannerWeekliesAlert());
         defaults.store("voiceWeeklies", config.voiceWeeklies());
         defaults.store("chatWeeklies", config.chatWeeklies());
-        defaults.store("plannerShowKingdom", config.plannerShowKingdom());
-        defaults.store("plannerShowContract", config.plannerShowContract());
         defaults.store("plannerShowTimers", config.plannerShowTimers());
         defaults.store("farmingPatchList", config.farmingPatchList());
         defaults.store("farmingReadyAlert", config.farmingReadyAlert());
@@ -44,5 +42,7 @@ final class PlannerConfigDefaults {
         defaults.store("plannerShowCalculator", config.plannerShowCalculator());
         defaults.store("plannerCalcPrices", config.plannerCalcPrices());
         defaults.store("plannerCalcHideMembers", config.plannerCalcHideMembers());
+        defaults.store("plannerPlanOverlay", config.plannerPlanOverlay());
+        defaults.store("compactOverlays", config.compactOverlays());
     }
 }

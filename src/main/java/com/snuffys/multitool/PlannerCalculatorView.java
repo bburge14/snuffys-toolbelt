@@ -266,10 +266,11 @@ final class PlannerCalculatorView {
                 : String.format("%,d xp", goal)) + (goal <= now ? " (reached)" : ""));
             goalText.setForeground(PlannerUi.MUTED);
         } else {
-            goalText.setText("No goal set");
+            // (goals are the Skilling Helper's: without it running there are none to show or set)
+            goalText.setText(calc.trackerInstalled() ? "No goal set" : "");
             goalText.setForeground(PlannerUi.MUTED);
         }
-        goalLink.setVisible(!isGoal && target > Math.max(0, game));
+        goalLink.setVisible(calc.trackerInstalled() && !isGoal && target > Math.max(0, game));
         resetLink.setVisible(calc.savedTarget(shown) > 0);
         int start = isGoal && calc.goalStart(shown) > 0 ? calc.goalStart(shown) : Experience.getXpForLevel(CalculatorData.level(now, false));
         double done = target > start ? (double) (now - start) / (target - start) : 1;
@@ -784,7 +785,7 @@ final class PlannerCalculatorView {
             .append('|').append(calc.sort());
         key.append('|').append(calc.owned().hashCode());
         SkillPlans.Plan plan = calc.plan(shown);
-        key.append('|').append(SkillPlans.encodeAll(calc.plans(shown))).append(calc.openIndex(shown)).append(calc.planExpanded()).append(goalOpen)
+        key.append('|').append(SkillPlans.encodeAll(calc.plans(shown))).append(calc.openIndex(shown)).append(calc.planExpanded()).append(goalOpen).append(calc.pinnedPlanSkill())
             .append(calc.goalPick(shown))
             .append(calc.planCounts(skills()).keySet())
             .append('|').append(plan == null ? "" : SkillPlans.encode(plan)).append(calc.isTracked(shown, plan))
@@ -1346,12 +1347,12 @@ final class PlannerCalculatorView {
         int level = levelNow();
         if (plan == null) {
             fillPlanList(shown, null);
-            list.add(PlannerUi.empty((calc.goal(shown) > planXp() ? "No plans for your goal yet: Make a plan for it (click the "
+            list.add(PlannerUi.empty((calc.goal(shown) > planXp() ? "No plans for your goal yet: Make a plan (click the "
                 + "goal), or start one here. " : "No plans for " + shown.getName() + " yet. ") + "A plan is a goal and milestones on the way, "
                 + "each with its own method (\"1-20 Logs, 20-50 Willow logs\"). Make as many as you like and export the "
                 + "one you follow to the tracker."));
             int goal = newGoal();
-            list.add(linkRow(PlannerUi.linkLabel("Start from suggestions", "A new plan from the wiki's training guides, from "
+            list.add(linkRow(PlannerUi.linkLabel("Wiki suggestions", "A new plan from the wiki's training guides, from "
                 + "your level to " + goal + "; then change any of it", () -> suggest(shown, actions, on, goal)),
                 PlannerUi.linkLabel("New plan", "An empty plan: add milestones by right-clicking actions, or +",
                     () -> newPlan(shown))));
@@ -1370,7 +1371,7 @@ final class PlannerCalculatorView {
                 "Change the plan's final goal", () -> changeGoal(shown))));
             list.add(PlannerUi.empty("No milestones yet: right-click an action > Add to plan, or start from the wiki's "
                 + "suggestions."));
-            list.add(linkRow(PlannerUi.linkLabel("Start from suggestions", "Fill this plan from the wiki's training "
+            list.add(linkRow(PlannerUi.linkLabel("Wiki suggestions", "Fill this plan from the wiki's training "
                 + "guides, from your level to " + goal + "; then change any of it", () -> suggest(shown, actions, on, goal)),
                 PlannerUi.linkLabel("Add a milestone", "Pick its method and levels", () -> stepDialog(shown, -1, goal))));
             return;
@@ -1430,7 +1431,7 @@ final class PlannerCalculatorView {
             list.add(PlannerUi.spaced(planSummary(steps, totals, level, endLevel)));
         }
         fillMaterials(shown, steps);
-        list.add(linkRow(PlannerUi.linkLabel("Start from suggestions", "Replace the milestones with the wiki's training "
+        list.add(linkRow(PlannerUi.linkLabel("Wiki suggestions", "Replace the milestones with the wiki's training "
                 + "guides' methods from your level to " + plan.goal, () -> suggest(shown, actions, on, plan.goal)),
             PlannerUi.linkLabel("Delete plan", "Delete this plan (the tracker keeps it if you exported it)", () -> {
                 if (confirm("Delete the plan \"" + planName(plan, calc.openIndex(shown)) + "\"?")) {
@@ -1574,9 +1575,36 @@ final class PlannerCalculatorView {
             } else {
                 card.title.setForeground(new Color(200, 200, 200));
             }
+            // Pin to the game screen (the plan overlay, which is only there without the Skilling Helper): solid on the
+            // pinned plan, faint on the others; pinning opens it
+            boolean pinned = isOpen && shown == calc.pinnedPlanSkill();
+            if (!calc.trackerInstalled()) {
+                card.east(new PlannerUi.IconButton(new PlannerUi.Glyph(PlannerUi.Shape.PIN, 13, pinned ? Color.WHITE
+                    : new Color(110, 110, 110)), pinned ? "Unpin it from the game screen" : "Pin it to the game screen "
+                    + "(shown even when you're training something else)", () -> {
+                        if (pinned) {
+                            calc.setPinnedPlanSkill(null);
+                        } else {
+                            calc.openPlan(shown, index);
+                            calc.setPinnedPlanSkill(shown);
+                        }
+                        redraw.run();
+                    }));
+            }
             JPopupMenu menu = new JPopupMenu();
             if (!isOpen) {
                 menu.add(menuItem("Open", () -> openPlan(shown, index)));
+            }
+            if (!calc.trackerInstalled()) {
+                menu.add(menuItem(pinned ? "Unpin from screen" : "Pin to screen", () -> {
+                    if (pinned) {
+                        calc.setPinnedPlanSkill(null);
+                    } else {
+                        calc.openPlan(shown, index);
+                        calc.setPinnedPlanSkill(shown);
+                    }
+                    redraw.run();
+                }));
             }
             menu.add(menuItem("Rename...", () -> renamePlan(shown, index, plan)));
             menu.add(menuItem("Duplicate", () -> {
@@ -1665,7 +1693,7 @@ final class PlannerCalculatorView {
             + "remove it</html>")));
         if (goalOpen) {
             list.add(linkRow(PlannerUi.linkLabel("Change goal", "Set a new level or XP for it", () -> changeSkillGoal(shown)),
-                PlannerUi.linkLabel("Make a plan for it", "A new plan to this goal, with milestones you can change",
+                PlannerUi.linkLabel("Make a plan", "A new plan to this goal, with milestones you can change",
                     () -> planFromGoal(shown, goal, pick)),
                 PlannerUi.linkLabel("Remove goal", "Clear the goal (in the Skilling Helper too)", () -> removeSkillGoal(shown))));
         }
@@ -1745,18 +1773,35 @@ final class PlannerCalculatorView {
             + "levels; the Skilling Helper suggests the wiki's method there");
     }
 
-    // Links side by side at the right
+    // Buttons side by side, sharing the width: each link drawn as a button (a card with its text centred, lighter
+    // when the mouse is over it)
     private static JComponent linkRow(JComponent... links) {
-        JPanel row = new JPanel();
-        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        JPanel row = new JPanel(new GridLayout(1, links.length, PlannerUi.GAP, 0));
         row.setBackground(PlannerUi.BACKGROUND);
-        row.setBorder(new EmptyBorder(2, 0, 6, 2));
-        row.add(javax.swing.Box.createHorizontalGlue());
-        for (int i = 0; i < links.length; i++) {
-            if (i > 0) {
-                row.add(PlannerUi.label("  ·  ", PlannerUi.FAINT));
+        row.setBorder(new EmptyBorder(2, 0, 6, 0));
+        for (JComponent link : links) {
+            if (link instanceof JLabel) {
+                JLabel button = (JLabel) link;
+                button.setHorizontalAlignment(SwingConstants.CENTER);
+                button.setOpaque(true);
+                button.setBackground(PlannerUi.CARD);
+                button.setForeground(new Color(220, 220, 220));
+                button.setBorder(new EmptyBorder(6, 4, 6, 4));
+                button.setMinimumSize(new Dimension(0, 0));
+                button.addMouseListener(new MouseAdapter() {
+                    @Override
+                    public void mouseEntered(MouseEvent e) {
+                        button.setBackground(PlannerUi.CARD_HOVER);
+                    }
+
+                    @Override
+                    public void mouseExited(MouseEvent e) {
+                        button.setBackground(PlannerUi.CARD);
+                        button.setForeground(new Color(220, 220, 220));
+                    }
+                });
             }
-            row.add(links[i]);
+            row.add(link);
         }
         return PlannerUi.fullWidth(row);
     }
@@ -1960,7 +2005,7 @@ final class PlannerCalculatorView {
             calc.otherMethods(shown));
         if (plan.steps.isEmpty()) {
             JOptionPane.showMessageDialog(list, "The wiki's training guides have nothing to suggest for " + shown.getName()
-                + " here: add milestones from the actions instead.", "Start from suggestions", JOptionPane.INFORMATION_MESSAGE);
+                + " here: add milestones from the actions instead.", "Wiki suggestions", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
         plan.name = old != null ? old.name : "Wiki suggestions";

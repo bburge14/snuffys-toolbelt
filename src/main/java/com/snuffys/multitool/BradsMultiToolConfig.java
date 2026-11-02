@@ -22,7 +22,7 @@ public interface BradsMultiToolConfig extends SkillTrackerConfig, PvmConfig, Gem
 
     @ConfigSection(
         name = "About",
-        description = "<div width='300'>Snuffy's Toolbelt: every one of Snuffy's plugins in one (don't run it with the separate ones). Clashes (a warning icon among the info boxes while they're on): the timer plugins Tree Despawn Timer, MLM Despawn Timer, Calcified Rock Despawn Timer, Daeyalt Mining Timer, Fishing Spot Timer, Fishing Spot Tracker, Barbarian Fishing, Aerial Fishing Timers, Star AFK Timer, Salvaging AFK Timer, Fire Timer, and RuneLite's Hunter and Mining plugins (our matching timers hide for them); Hunter Rumours; RuneLite's Slayer plugin with its task highlight on; RuneLite's Metronome; RuneLite's Idle Notifier; RuneLite's Daily Task Indicator and Loot Tracker (the Planner). Open the Guide for every feature and how to use it.",
+        description = "<div width='300'>Snuffy's Toolbelt: every one of Snuffy's plugins in one (don't run it with the separate ones). Clashes (a warning icon among the info boxes while they're on): the timer plugins Tree Despawn Timer, MLM Despawn Timer, Calcified Rock Despawn Timer, Daeyalt Mining Timer, Fishing Spot Timer, Fishing Spot Tracker, Barbarian Fishing, Aerial Fishing Timers, Star AFK Timer, Salvaging AFK Timer, Fire Timer, and RuneLite's Hunter and Mining plugins (our matching timers hide for them); Hunter Rumours; RuneLite's Slayer plugin with its task highlight on; RuneLite's Metronome; RuneLite's Idle Notifier; Loot Tracker (the Planner). Open the Guide for every feature and how to use it.",
         position = -10
     )
     String aboutSection = "aboutSection";
@@ -41,7 +41,7 @@ public interface BradsMultiToolConfig extends SkillTrackerConfig, PvmConfig, Gem
 
     @ConfigSection(
         name = "Planner: Today",
-        description = "<div width='300'>The Planner's TODAY list: daily rewards to collect (from the game) and your own daily to-dos, and the voice line when there are some to do",
+        description = "<div width='300'>The Planner's TODAY list: your own daily to-dos (examples show until you add one), and the voice line when there are some to do",
         position = 70,
         closedByDefault = true
     )
@@ -49,7 +49,7 @@ public interface BradsMultiToolConfig extends SkillTrackerConfig, PvmConfig, Gem
 
     @ConfigSection(
         name = "Planner: Weekly",
-        description = "<div width='300'>The Planner's WEEKLY list: Tears of Guthix, your own weekly to-dos, the Kingdom of Miscellania and the farming contract",
+        description = "<div width='300'>The Planner's WEEKLY list: your own weekly to-dos (examples show until you add one)",
         position = 71,
         closedByDefault = true
     )
@@ -379,7 +379,7 @@ public interface BradsMultiToolConfig extends SkillTrackerConfig, PvmConfig, Gem
     @ConfigItem(
         keyName = "voicePersona",
         name = "Voice Persona",
-        description = "<div width='300'>Voice used for spoken alerts; changing it plays a sample. Amy, Cori: US and UK women. Alan, Ryan, John: UK and US men. Arctic: a Scottish man. L2 Arctic: a man with a Mandarin Chinese accent. Wise Old Man, TzHaar, Ghost: characters. Random: a different one each alert",
+        description = "<div width='300'>Voice used for spoken alerts; changing it plays a sample. Amy, Cori: US and UK women. Alan, John: UK and US men. Random: a different one each alert",
         section = generalSection,
         position = 1
     )
