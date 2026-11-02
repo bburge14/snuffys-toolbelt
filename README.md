@@ -55,6 +55,26 @@ Everything in Snuffy's six separate plugins, in one plugin:
 - **Clue drops** from monsters and skilling
 
 
+## Screenshots
+
+![Pinned skill card](screenshots/skilltracker-01-pinned-skill-card.png)
+![Sidebar tracker](screenshots/skilltracker-02-sidebar-tracker.png)
+![Hover card](screenshots/skilltracker-03-hover-card.png)
+![Resource timers](screenshots/skilltracker-04-resource-timers.png)
+![Brimhaven Agility Arena route](screenshots/skilltracker-05-Brimhaven-Agility-Arena-route.png)
+![Slayer card with and without a task](screenshots/pvm-01-slayer-card-with-and-without-a-task.png)
+![PvM HUD](screenshots/pvm-02-PvM-HUD.png)
+![Monster hover card](screenshots/pvm-03-monster-hover-card.png)
+![Buff bar](screenshots/pvm-04-buff-bar.png)
+![Crab HUD](screenshots/gemcrab-01-crab-HUD.png)
+![Crab radar](screenshots/gemcrab-02-crab-radar.png)
+![Dailies and weeklies](screenshots/planner-01-dailies-and-weeklies.png)
+![Farming and your timers](screenshots/planner-02-farming-and-your-timers.png)
+![Drops for each monster](screenshots/planner-03-drops-for-each-monster.png)
+![Calculator banked XP](screenshots/planner-04-calculator-banked-XP.png)
+![Calculator skill plans](screenshots/planner-05-calculator-skill-plans.png)
+![Settings](screenshots/voices-01-settings.png)
+
 ## Installing
 
 In RuneLite, open the **Plugin Hub** (the plug icon at the bottom of the configuration panel), search for
