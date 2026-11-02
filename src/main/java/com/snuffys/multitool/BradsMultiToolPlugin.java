@@ -1,0 +1,104 @@
+package com.snuffys.multitool;
+
+import com.google.inject.Provides;
+import javax.inject.Inject;
+import net.runelite.client.config.ConfigManager;
+import net.runelite.client.plugins.Plugin;
+import net.runelite.client.plugins.PluginDescriptor;
+
+@PluginDescriptor(
+    name = "Snuffy's Toolbelt",
+    description = "All of Snuffy's plugins in one: Skilling Helper, PvM/Slayer, GemCrab Tracker, Tick Counter, Planner and Alerts",
+    tags = {"snuffy", "toolbelt", "xp", "skills", "goals", "skilling", "timers", "pvm", "slayer", "buffs", "gemstone", "crab", "tick", "metronome", "planner", "dailies", "voice", "alerts"}
+)
+public class BradsMultiToolPlugin extends Plugin {
+
+    @Inject
+    private Lifecycle lifecycle;
+
+    @Inject
+    private CommonFeature common;
+
+    @Inject
+    private SkillTrackerFeature skillTracker;
+
+    @Inject
+    private PvmFeature pvm;
+
+    @Inject
+    private GemCrabFeature gemCrab;
+
+    @Inject
+    private TickCounterFeature tickCounter;
+
+    @Inject
+    private PlannerFeature planner;
+
+    @Override
+    protected void startUp() throws Exception {
+        lifecycle.plugin = this;
+        common.start(lifecycle);
+        skillTracker.start(lifecycle);
+        pvm.start(lifecycle);
+        gemCrab.start(lifecycle);
+        tickCounter.start(lifecycle);
+        planner.start(lifecycle);
+        // Together: PvM's monster card steps aside for the skilling and Sailing cards (separate plugins do the
+        // same through PluginFamily)
+        pvm.hoverCard().setSkillingCards(skillTracker.skillingCards()::coversNpc);
+        lifecycle.onStop(() -> {
+            pvm.hoverCard().setSkillingCards(null);
+        });
+    }
+
+    @Override
+    protected void shutDown() throws Exception {
+        lifecycle.stopAll();
+    }
+
+    @Provides
+    PluginIdentity provideIdentity() {
+        return PluginIdentity.MULTI_TOOL;
+    }
+
+    // The all-in-one's settings stand in for each plugin's own (same keys, one group)
+    @Provides
+    TickConfig provideTickConfig(BradsMultiToolConfig config) {
+        return config;
+    }
+
+    @Provides
+    BuffConfig provideBuffConfig(BradsMultiToolConfig config) {
+        return config;
+    }
+
+    @Provides
+    CommonConfig provideCommonConfig(BradsMultiToolConfig config) {
+        return config;
+    }
+
+    @Provides
+    SkillTrackerConfig provideSkillTrackerConfig(BradsMultiToolConfig config) {
+        return config;
+    }
+
+    @Provides
+    PvmConfig providePvmConfig(BradsMultiToolConfig config) {
+        return config;
+    }
+
+    @Provides
+    GemCrabConfig provideGemCrabConfig(BradsMultiToolConfig config) {
+        return config;
+    }
+
+    @Provides
+    PlannerConfig providePlannerConfig(BradsMultiToolConfig config) {
+        return config;
+    }
+
+    @Provides
+    BradsMultiToolConfig provideConfig(ConfigManager configManager) {
+        return configManager.getConfig(BradsMultiToolConfig.class);
+    }
+}
