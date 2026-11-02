@@ -119,6 +119,14 @@ public interface PlannerConfig extends CommonConfig {
     )
     String plannerNotesSection = "plannerNotesSection";
 
+    @ConfigSection(
+        name = "Calculator",
+        description = "<div width='300'>The CALCULATOR tab: actions to your target level with XP bonuses, time, Grand Exchange cost and what your bank gets you",
+        position = 76,
+        closedByDefault = true
+    )
+    String plannerCalculatorSection = "plannerCalculatorSection";
+
     // ---- Today ----
 
     @ConfigItem(
@@ -323,12 +331,58 @@ public interface PlannerConfig extends CommonConfig {
         return true;
     }
 
+    /** How your own timers say they're done: the voice line, or a game sound. */
+    enum TimerSound {
+        VOICE("Voice line", -1),
+        BELL("Bell", net.runelite.api.SoundEffectID.TOWN_CRIER_BELL_DING),
+        CHIME("Chime", net.runelite.api.SoundEffectID.GE_ADD_OFFER_DINGALING),
+        ANVIL("Anvil", net.runelite.api.SoundEffectID.SMITH_ANVIL_TINK),
+        BOOP("Boop", net.runelite.api.SoundEffectID.UI_BOOP),
+        DOOR("Door", net.runelite.api.SoundEffectID.CLOSE_DOOR);
+
+        private final String label;
+        final int id;
+
+        TimerSound(String label, int id) {
+            this.label = label;
+            this.id = id;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
+    @ConfigItem(
+        keyName = "timerSound",
+        name = "Ready Sound",
+        description = "<div width='300'>How the Timers tab tells you something's done (your timers, farming patches, bird houses): its voice line, or a game sound: Bell, Chime, Anvil, Boop or Door (at the game's Sound Effects volume). Picking one plays it",
+        section = plannerTimersSection,
+        position = 8
+    )
+    default TimerSound timerSound() {
+        return TimerSound.VOICE;
+    }
+
+    @Range(min = 1, max = 5)
+    @ConfigItem(
+        keyName = "timerSoundRepeats",
+        name = "Times",
+        description = "<div width='300'>How many times the Ready Sound plays (a sound only; the voice line is said once)",
+        section = plannerTimersSection,
+        position = 9
+    )
+    default int timerSoundRepeats() {
+        return 3;
+    }
+
     @ConfigItem(
         keyName = "voiceTimerDone",
         name = "Voice: Timer Done",
         description = "<div width='300'>Says \"Your timer is done\" when one of your own timers ends (turning it on plays a preview)",
         section = plannerTimersSection,
-        position = 8
+        position = 10
     )
     default boolean voiceTimerDone() {
         return true;
@@ -339,7 +393,7 @@ public interface PlannerConfig extends CommonConfig {
         name = "Chat: Timer Done",
         description = "Chat message naming the timer that ended",
         section = plannerTimersSection,
-        position = 9
+        position = 11
     )
     default boolean chatTimerDone() {
         return true;
@@ -363,7 +417,7 @@ public interface PlannerConfig extends CommonConfig {
     @ConfigItem(
         keyName = "plannerShowDrops",
         name = "Show Drops",
-        description = "<div width='300'>The DROPS list in the Planner tab: for each monster or chest, how many kills or opens, the Grand Exchange value and the items, and your recent drops",
+        description = "<div width='300'>The DROPS list in the Planner tab: each monster or chest with its kills or opens and Grand Exchange value, and your recent drops. Click one for its own page: every item it has given with the drop rate you've seen, its best drop, kills since a valuable drop, and this session beside all time",
         section = plannerDropsSection,
         position = 0
     )
@@ -386,7 +440,7 @@ public interface PlannerConfig extends CommonConfig {
     @ConfigItem(
         keyName = "plannerValuableDrop",
         name = "Valuable Drop From",
-        description = "<div width='300'>Recent drops worth at least this much (Grand Exchange) show in Valuable Drop Colour",
+        description = "<div width='300'>Drops worth at least this much (Grand Exchange) show in Valuable Drop Colour, and a monster's page counts its kills since one",
         section = plannerDropsSection,
         position = 2
     )
@@ -397,7 +451,7 @@ public interface PlannerConfig extends CommonConfig {
     @ConfigItem(
         keyName = "plannerValuableColor",
         name = "Valuable Drop Colour",
-        description = "The colour of valuable drops in the recent list",
+        description = "<div width='300'>The colour of valuable drops in the recent list and on a monster's page",
         section = plannerDropsSection,
         position = 3
     )
@@ -427,6 +481,19 @@ public interface PlannerConfig extends CommonConfig {
         position = 0
     )
     default boolean plannerShowNotes() {
+        return true;
+    }
+
+    // ---- Calculator ----
+
+    @ConfigItem(
+        keyName = "plannerShowCalculator",
+        name = "Show Calculator",
+        description = "<div width='300'>The CALCULATOR tab in the Planner: pick a skill and a target (your goal, or the next level) and see every action with its XP (with the bonuses you tick), how many to the target, the time where the wiki's training guides give an XP rate, the Grand Exchange cost per XP of what you make, what you own of it, and in Banked view the XP and level your bank and inventory get you. Set as goal sets the skill's goal like the Skilling Helper's Set Goal. Made from RuneLite's own Skill Calculator; information only",
+        section = plannerCalculatorSection,
+        position = 0
+    )
+    default boolean plannerShowCalculator() {
         return true;
     }
 

@@ -30,6 +30,8 @@ final class PlannerConfigDefaults {
         defaults.store("birdhouseAlert", config.birdhouseAlert());
         defaults.store("voiceBirdhouses", config.voiceBirdhouses());
         defaults.store("chatBirdhouses", config.chatBirdhouses());
+        defaults.store("timerSound", config.timerSound());
+        defaults.store("timerSoundRepeats", config.timerSoundRepeats());
         defaults.store("voiceTimerDone", config.voiceTimerDone());
         defaults.store("chatTimerDone", config.chatTimerDone());
         defaults.store("plannerShowSlayer", config.plannerShowSlayer());
@@ -39,5 +41,6 @@ final class PlannerConfigDefaults {
         defaults.store("plannerValuableColor", config.plannerValuableColor());
         defaults.store("plannerRecentDrops", config.plannerRecentDrops());
         defaults.store("plannerShowNotes", config.plannerShowNotes());
+        defaults.store("plannerShowCalculator", config.plannerShowCalculator());
     }
 }
