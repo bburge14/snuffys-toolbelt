@@ -2,6 +2,23 @@
 
 Each version's changes, newest first.
 
+## 1.1.4 (2026-11-03)
+
+- Planner: ironman plans (from the account, or always/never): materials got yourself all the way down (bars, their ore and coal), supplies in each skill on the chain, no money plan; gather or buy from a milestone's menu; a supply can be added to its skill's plan
+- Planner plans: get a material yourself (gather it or make it in another skill) instead of buying it: left out of the money plan, with the XP, time and gp saved, and listed under that skill's Supplies for other plans
+- Planner Calculator: XP bonuses fold away (the total stays on the header)
+- Planner plans: the goal card holds its plans (click to show or fold them), all plan cards listed together before the open one, the followed plan marked Followed
+- Planner Calculator: the skill, target, bonuses and view tabs stay put; only the list under them scrolls
+- Planner plans: click a milestone for its breakdown (each material x its price, sales, net, each and in all); notes become one line with the details on hover
+- Planner: record your real GE trades (what each fill paid or brought in), use your own prices in plans, and show what a plan has really spent and sold since its budget was set
+- Planner plans: Milestones, Materials and Money plan fold away; the budget redraws when set (it didn't), the money plan says the budget the whole plan needs and how short it is, shorter lines
+- Planner: a Money plan for each skill plan within a budget you set (what to buy, rounds of buy, make and sell, budget left, where it runs out), and sales after the GE's 2% tax everywhere
+- Planner: GE buy limits in Timers (how much of each limit is used, when it resets, and whether a stuck offer is the limit or your price), buy time in a plan's materials; hover cards stay away from other plugins' panels under the mouse
+- Planner plans: milestone cards one thing a line (to go and XP; time and gp/xp; costs and sells; net), and Find a better method prices every action over the milestone's levels with the best picks on top
+- Planner: Add to plan uses the Current and Target levels you typed (no dialog). Launcher: a startup error shows in a message and a log instead of the window just not opening
+- Planner plans: fit a milestone inside another (right-click > Insert a milestone in it, or Add to plan asks for levels when the plan is full), click a gap to fill it, and shortening a milestone leaves a gap instead of stretching its neighbour
+- Planner plans: milestones show progress (bar, % and actions done) and tick off as Done when passed, with a game chat message naming the next one and one at the goal
+
 ## 1.1.3 (2026-11-02)
 
 - Plugin Hub feedback: RuneLite's AudioPlayer, and one plugin per pull request

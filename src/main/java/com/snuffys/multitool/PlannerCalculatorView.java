@@ -110,7 +110,8 @@ final class PlannerCalculatorView {
 
     private Skill skill;
     // The goal's card in the Plan view is unfolded (its links showing)
-    private boolean goalOpen;
+    // The goal card open, with its plans under it (open to start with)
+    private boolean goalOpen = true;
     // What you typed over the game's XP (null: from the game). A typed target is kept per skill (PlannerCalculator)
     private Integer currentOverride;
     private boolean adjusting;
@@ -142,14 +143,22 @@ final class PlannerCalculatorView {
 
     /** Adds the page's parts to its column (once). {@code redraw} redraws the page. */
     void addTo(JPanel column, Runnable redraw) {
+        addTo(column, column, redraw);
+    }
+
+    /**
+     * The skill, its target, the bonuses and the view's tabs in {@code top} (they stay put), the list (actions, banked,
+     * the plan) in {@code column} (it scrolls).
+     */
+    void addTo(JPanel top, JPanel column, Runnable redraw) {
         this.redraw = redraw;
-        column.add(header);
-        column.add(grid);
-        column.add(PlannerUi.spaced(inputs));
-        column.add(bonusSlot);
-        column.add(listHeader);
+        top.add(header);
+        top.add(grid);
+        top.add(PlannerUi.spaced(inputs));
+        top.add(bonusSlot);
+        top.add(listHeader);
         searchSlot = PlannerUi.spaced(searchRow);
-        column.add(searchSlot);
+        top.add(searchSlot);
         column.add(list);
     }
 
@@ -166,6 +175,16 @@ final class PlannerCalculatorView {
         currentOverride = null;
         search.setText(text);
         typed.stop();
+    }
+
+    /** For the preview: this milestone of the skill's open plan opened to its breakdown. */
+    void previewBreakdown(Skill skill, int milestone) {
+        openSteps.add(stepKey(skill, calc.plan(skill).steps.get(milestone)));
+    }
+
+    /** For the preview: choosing the method for this milestone. */
+    void previewPicking(int milestone) {
+        picking = milestone;
     }
 
     // ---- The numbers ----
@@ -280,6 +299,7 @@ final class PlannerCalculatorView {
         Set<String> on = calc.bonuses(shown);
         StringBuilder bonusKey = new StringBuilder(shown.name()).append('|');
         on.forEach(id -> bonusKey.append(id).append(','));
+        bonusKey.append(calc.planFolded("bonuses"));
         if (bonusSlot.changed(bonusKey.toString()) && !skillCalc.bonuses.isEmpty()) {
             bonusSlot.add(bonuses(shown, skillCalc, on), BorderLayout.CENTER);
         }
@@ -658,7 +678,12 @@ final class PlannerCalculatorView {
         for (CalculatorData.Bonus bonus : CalculatorData.bonuses(skillCalc, on)) {
             total *= bonus.value;
         }
-        box.add(PlannerUi.group("XP bonuses", on.isEmpty() ? "" : "x" + trim(Math.round(total * 1000) / 1000.0)));
+        // Folds away like the plan's sections (the total stays on the header)
+        box.add(section("bonuses", "XP bonuses", on.isEmpty() ? (calc.planFolded("bonuses") ? "none on" : "")
+            : "x" + trim(Math.round(total * 1000) / 1000.0)));
+        if (calc.planFolded("bonuses")) {
+            return box;
+        }
         JPanel rows = new JPanel(new GridLayout(0, 1));
         rows.setBackground(PlannerUi.CARD);
         rows.setBorder(new EmptyBorder(2, 0, 2, 0));
@@ -783,7 +808,8 @@ final class PlannerCalculatorView {
             .append('|').append(calc.showMembers()).append(calc.showPrices()).append('|').append(calc.priceVersion())
             .append('|').append(calc.trackerInstalled()).append('|').append(picking).append('|').append(calc.canPlan())
             .append('|').append(calc.sort());
-        key.append('|').append(calc.owned().hashCode());
+        key.append('|').append(calc.owned().hashCode()).append('|').append(calc.buyLimitsKnown()).append(calc.planFolds()).append(calc.planBudget(shown))
+            .append('|').append(calc.tradesVersion()).append('|').append(openSteps).append('|').append(calc.gatherState());
         SkillPlans.Plan plan = calc.plan(shown);
         key.append('|').append(SkillPlans.encodeAll(calc.plans(shown))).append(calc.openIndex(shown)).append(calc.planExpanded()).append(goalOpen).append(calc.pinnedPlanSkill())
             .append(calc.goalPick(shown))
@@ -818,8 +844,19 @@ final class PlannerCalculatorView {
         if (mode == PlannerCalculator.Mode.PLAN) {
             fillPlan(shown, skillCalc, on, planXp(), target, actions);
         } else {
+            // Picking a milestone's method: every action priced over that milestone's levels (what's left of it)
+            int from = now;
+            int to = target;
+            if (picking != null) {
+                SkillPlans.Step step = calc.plan(shown).steps.get(picking);
+                int start = Experience.getXpForLevel(Math.max(1, step.from));
+                to = Experience.getXpForLevel(Math.min(99, step.to));
+                from = now > start && now < to ? now : start;
+            }
+            now = from;
+            target = to;
             List<PlannerCalculator.Row> rows = PlannerCalculator.rows(shown, actions, on, now, target, recipes, training, owned,
-                icons::price, calc::itemPrice);
+                this::price, calc::itemPrice);
             String filter = search.getText().trim().toLowerCase(Locale.ROOT);
             if (mode == PlannerCalculator.Mode.BANKED) {
                 fillBanked(shown, skillCalc, on, now, target, rows, owned, filter);
@@ -827,8 +864,8 @@ final class PlannerCalculatorView {
                 fillActions(shown, on, now, target, PlannerCalculator.sorted(rows, calc.sort()), filter);
             }
         }
-        list.add(PlannerUi.empty("From RuneLite's Skill Calculator. Times are from the wiki's training guides; costs at "
-            + "Grand Exchange prices."));
+        list.add(note("Where these figures come from", "From RuneLite's Skill Calculator. Times are from the wiki's "
+            + "training guides; prices are the Grand Exchange's (or yours, from your trades this week), sales after its 2% tax"));
     }
 
     // Every action (searched), or with a milestone waiting for a method, the actions to pick it from
@@ -842,6 +879,10 @@ final class PlannerCalculatorView {
                     picking = null;
                     redraw.run();
                 }));
+            JComponent best = bestMethods(shown, rows, step);
+            if (best != null) {
+                list.add(PlannerUi.spaced(best));
+            }
         }
         int shownCount = 0;
         for (PlannerCalculator.Row row : rows) {
@@ -854,6 +895,65 @@ final class PlannerCalculatorView {
             list.add(PlannerUi.empty(filter.isEmpty() ? "No actions for " + shown.getName() + "."
                 : "No " + shown.getName() + " action has \"" + filter + "\" in its name."));
         }
+    }
+
+    // The best picks for a milestone's levels, each a click to use: cheapest per XP, fastest, most profit, most XP each
+    // (only actions you can do at its start)
+    private JComponent bestMethods(Skill shown, List<PlannerCalculator.Row> rows, SkillPlans.Step step) {
+        PlannerCalculator.Row cheapest = null;
+        PlannerCalculator.Row fastest = null;
+        PlannerCalculator.Row profit = null;
+        PlannerCalculator.Row most = null;
+        for (PlannerCalculator.Row row : rows) {
+            if (row.action.level > step.from || row.needed <= 0) {
+                continue;
+            }
+            Double perXp = calc.showPrices() ? row.perXp() : null;
+            if (perXp != null && (cheapest == null || perXp > cheapest.perXp())) {
+                cheapest = row;
+            }
+            if (row.xpHour > 0 && (fastest == null || row.xpHour > fastest.xpHour)) {
+                fastest = row;
+            }
+            double net = netOf(row);
+            if (calc.showPrices() && net > 0 && (profit == null || net > netOf(profit))) {
+                profit = row;
+            }
+            if (most == null || row.xpEach > most.xpEach) {
+                most = row;
+            }
+        }
+        JPanel box = new JPanel(new GridLayout(0, 1, 0, 2));
+        box.setBackground(PlannerUi.CARD);
+        box.setBorder(new EmptyBorder(6, 8, 6, 8));
+        box.add(PlannerUi.label("Best for " + step.from + " → " + step.to + " (click to use)", Color.WHITE));
+        bestLine(box, shown, "Cheapest", cheapest, cheapest == null ? "" : gpPerXp(cheapest.perXp()));
+        bestLine(box, shown, "Fastest", fastest, fastest == null ? "" : PlannerPanel.gp(fastest.xpHour) + " xp/hr"
+            + (fastest.seconds > 0 ? ", ~" + PlannerPanel.formatDuration(fastest.seconds) : ""));
+        bestLine(box, shown, "Most profit", profit, profit == null ? "" : signed(netOf(profit)) + " gp");
+        bestLine(box, shown, "Most XP each", most, most == null ? "" : xp(most.xpEach) + " xp, "
+            + String.format("%,d", most.needed) + " to go");
+        return box.getComponentCount() > 1 ? box : null;
+    }
+
+    private static double netOf(PlannerCalculator.Row row) {
+        Double cost = row.cost(row.needed);
+        Double earn = row.earn(row.needed);
+        return (earn == null ? 0 : earn) - (cost == null ? 0 : cost);
+    }
+
+    private void bestLine(JPanel box, Skill shown, String what, PlannerCalculator.Row row, String detail) {
+        if (row == null) {
+            return;
+        }
+        // Two lines: the pick (a click uses it), then its numbers
+        JLabel line = PlannerUi.linkLabel(what + ": " + row.action.name, "Use " + row.action.name + " for this milestone ("
+            + detail + ")", () -> pickMethod(shown, row.action, row.xpEach));
+        line.setForeground(new Color(220, 220, 220));
+        box.add(line);
+        JLabel numbers = PlannerUi.label("   " + detail, PlannerUi.MUTED);
+        numbers.setToolTipText(line.getToolTipText());
+        box.add(numbers);
     }
 
     // What you own: the XP in all of it, the level that gets you to, its value, and each action you have the makings of
@@ -875,7 +975,7 @@ final class PlannerCalculatorView {
                 reaches ? PlannerUi.READY : Color.WHITE);
             tiles.add(levelTile);
             list.add(PlannerUi.spaced(tiles));
-            long value = calc.showPrices() ? PlannerCalculator.bankedValue(shown, skillCalc, on, level, recipes, owned, icons::price) : 0;
+            long value = calc.showPrices() ? PlannerCalculator.bankedValue(shown, skillCalc, on, level, recipes, owned, this::price) : 0;
             if (value > 0) {
                 // What it all sells for once made, less what the materials are worth: the cards' nets added up
                 Map<String, Integer> madeAll = PlannerCalculator.bankedMade(shown, skillCalc, on, level, recipes, owned);
@@ -900,8 +1000,8 @@ final class PlannerCalculatorView {
             }
         }
         if (!calc.bankSeen()) {
-            list.add(PlannerUi.empty("Open your bank once so the Planner can see what's in it; until then this counts your "
-                + "inventory."));
+            list.add(note("Open your bank once to count it", "Open your bank once so the Planner can see what's in it; "
+                + "until then this counts your inventory"));
         }
         // The cards stack up: each starts from the level the ones above it got you to, so the last one ends at the
         // total (not each from your level on its own)
@@ -1132,7 +1232,14 @@ final class PlannerCalculatorView {
             click = () -> pickMethod(shown, action, row.xpEach);
             menu.add(menuItem("Use for this milestone", click));
         } else if (calc.canPlan()) {
-            menu.add(menuItem("Add to plan", () -> addToPlan(shown, action, row.xpEach)));
+            int[] typed = typedLevels(shown);
+            if (typed != null) {
+                // The levels typed above (Current to Target): it goes in there, the milestones there make room
+                menu.add(menuItem("Add to plan (" + typed[0] + "-" + typed[1] + ")",
+                    () -> addToPlanAt(shown, action, row.xpEach, typed[0], typed[1])));
+            } else {
+                menu.add(menuItem("Add to plan", () -> addToPlan(shown, action, row.xpEach)));
+            }
         }
         return card.interactive(click, menu.getComponentCount() > 0 ? menu : null, actionTip(row, now, target));
     }
@@ -1169,6 +1276,29 @@ final class PlannerCalculatorView {
         label.setForeground(tone);
         label.setIcon(new NetBadge(net >= 0, tone));
         label.setIconTextGap(3);
+    }
+
+    /**
+     * The money on a card's fourth and fifth lines: "Costs 6.11M" and "Sells 810K" (each only when there's something),
+     * then "Net" and the net with its badge; nothing when neither is priced.
+     */
+    private static void priceLines(PlannerUi.Card card, Double cost, Double earn) {
+        double c = cost == null ? 0 : cost;
+        double e = earn == null ? 0 : earn;
+        if (c <= 0 && e <= 0) {
+            return;
+        }
+        if (c <= 0 || e <= 0) {
+            // Only one side (gathering sells, a few things only cost): it and the net on one line
+            card.fourth(c > 0 ? "Costs " + PlannerPanel.gp(Math.round(c)) : "Sells " + PlannerPanel.gp(Math.round(e)), "");
+            net(card.lastRight, cost, earn, true);
+            return;
+        }
+        card.fourth("Costs " + PlannerPanel.gp(Math.round(c)), "Sells " + PlannerPanel.gp(Math.round(e)));
+        card.last.setForeground(new Color(220, 150, 140));
+        card.lastRight.setForeground(new Color(150, 210, 150));
+        card.fifth("Net", "");
+        net(card.fifthRight, cost, earn, true);
     }
 
     // A small round badge: a plus for a net gain, a minus for a net loss
@@ -1347,19 +1477,21 @@ final class PlannerCalculatorView {
         int level = levelNow();
         if (plan == null) {
             fillPlanList(shown, null);
-            list.add(PlannerUi.empty((calc.goal(shown) > planXp() ? "No plans for your goal yet: Make a plan (click the "
-                + "goal), or start one here. " : "No plans for " + shown.getName() + " yet. ") + "A plan is a goal and milestones on the way, "
-                + "each with its own method (\"1-20 Logs, 20-50 Willow logs\"). Make as many as you like and export the "
-                + "one you follow to the tracker."));
+            list.add(note(calc.goal(shown) > planXp() ? "No plans for your goal yet" : "No " + shown.getName() + " plans yet",
+                "A plan is a goal and milestones on the way, each with its own method (\"1-20 Logs, 20-50 Willow logs\"). "
+                + "Start one from the wiki's suggestions or empty; make as many as you like and export the one you follow "
+                + "to the tracker"));
             int goal = newGoal();
             list.add(linkRow(PlannerUi.linkLabel("Wiki suggestions", "A new plan from the wiki's training guides, from "
                 + "your level to " + goal + "; then change any of it", () -> suggest(shown, actions, on, goal)),
                 PlannerUi.linkLabel("New plan", "An empty plan: add milestones by right-clicking actions, or +",
                     () -> newPlan(shown))));
+            fillSupplies(shown);
             return;
         }
         // The open plan unfolds under its card in the list
         fillPlanList(shown, () -> fillOpenPlan(shown, skillCalc, on, now, actions, plan, level));
+        fillSupplies(shown);
     }
 
     // The open plan: totals, each milestone (what's left of it), the gaps, the whole plan, and exporting it
@@ -1377,7 +1509,7 @@ final class PlannerCalculatorView {
             return;
         }
         List<PlannerCalculator.StepRow> steps = PlannerCalculator.stepRows(shown, skillCalc, on, plan, now, recipes, training,
-            icons::price, calc::itemPrice);
+            this::price, calc::itemPrice);
         PlannerCalculator.Totals totals = PlannerCalculator.totals(plan, steps, now);
 
         JPanel tiles = new JPanel(new GridLayout(0, 2, PlannerUi.GAP, PlannerUi.GAP));
@@ -1412,25 +1544,33 @@ final class PlannerCalculatorView {
         list.add(PlannerUi.spaced(tiles));
 
         JLabel goalLink = PlannerUi.linkLabel("Goal: level " + plan.goal, "Change the plan's final goal", () -> changeGoal(shown));
-        list.add(PlannerUi.group("Milestones", "", goalLink,
+        boolean milestonesFolded = calc.planFolded("milestones");
+        list.add(section("milestones", "Milestones", milestonesFolded ? plan.steps.size() + " in all" : "", goalLink,
             new PlannerUi.IconButton(new PlannerUi.Glyph(PlannerUi.Shape.PLUS, 14, ColorScheme.LIGHT_GRAY_COLOR),
                 "Add a milestone", () -> stepDialog(shown, -1, plan.goal))));
         int expected = level;
-        for (int i = 0; i < steps.size(); i++) {
+        for (int i = 0; i < steps.size() && !milestonesFolded; i++) {
             PlannerCalculator.StepRow step = steps.get(i);
             if (step.step.from > expected && step.step.from > level) {
-                list.add(gap(expected, step.step.from));
+                list.add(gap(shown, plan, expected, step.step.from));
             }
             list.add(PlannerUi.spaced(stepCard(shown, plan, i, step, level)));
+            if (openSteps.contains(stepKey(shown, step.step)) && !step.done) {
+                JComponent parts = breakdown(shown, step);
+                if (parts != null) {
+                    list.add(PlannerUi.spaced(parts));
+                }
+            }
             expected = Math.max(expected, step.step.to);
         }
-        if (expected < plan.goal) {
-            list.add(gap(expected, plan.goal));
+        if (expected < plan.goal && !milestonesFolded) {
+            list.add(gap(shown, plan, expected, plan.goal));
         }
         if (totals.xp > 0) {
             list.add(PlannerUi.spaced(planSummary(steps, totals, level, endLevel)));
         }
         fillMaterials(shown, steps);
+        fillMoneyPlan(shown, steps);
         list.add(linkRow(PlannerUi.linkLabel("Wiki suggestions", "Replace the milestones with the wiki's training "
                 + "guides' methods from your level to " + plan.goal, () -> suggest(shown, actions, on, plan.goal)),
             PlannerUi.linkLabel("Delete plan", "Delete this plan (the tracker keeps it if you exported it)", () -> {
@@ -1452,19 +1592,25 @@ final class PlannerCalculatorView {
             }
         }
         long perHour = totals.seconds > 0 ? Math.round(timedXp * 3600.0 / totals.seconds) : 0;
-        String time = totals.seconds > 0 ? "~" + PlannerPanel.formatDuration(totals.seconds) + (totals.untimed > 0 ? "+" : "")
-            + " to goal" : "no XP rate";
-        PlannerUi.Card card = new PlannerUi.Card("Whole plan: " + level + " → " + endLevel, PlannerPanel.gp(totals.xp) + " xp",
-            time);
+        // The time where the guides give rates; the milestones without one are said, not hidden behind "no XP rate"
+        int milestones = 0;
+        for (PlannerCalculator.StepRow s : steps) {
+            if (!s.done && s.xp > 0) {
+                milestones++;
+            }
+        }
+        String time = totals.seconds > 0 ? "~" + PlannerPanel.formatDuration(totals.seconds)
+            + (totals.untimed > 0 ? " for " + (milestones - totals.untimed) + " of " + milestones : "")
+            : "no XP rates";
+        PlannerUi.Card card = new PlannerUi.Card("Whole plan: " + level + " → " + endLevel,
+            milestones + " milestone" + (milestones == 1 ? "" : "s") + " to go", PlannerPanel.gp(totals.xp) + " xp");
         card.right.setForeground(Color.WHITE);
-        card.third(perHour > 0 ? "avg " + PlannerPanel.gp(perHour) + " xp/hr" : "", "");
         boolean prices = calc.showPrices() && (totals.cost > 0 || totals.earn > 0);
         double net = totals.earn - totals.cost;
+        card.third(time, prices ? gpPerXp(net / totals.xp) : "");
         if (prices) {
-            card.lowerRight.setText(gpPerXp(net / totals.xp));
             card.lowerRight.setForeground(net < 0 ? COSTS : PlannerUi.READY);
-            card.fourth(money(totals.cost, totals.earn, ""), "");
-            net(card.lastRight, totals.cost, totals.earn, true);
+            priceLines(card, totals.cost, totals.earn);
         }
         card.icon.setIcon(new ImageIcon(PlannerUi.picture(new PlannerUi.Glyph(PlannerUi.Shape.CALCULATOR, 20,
             new Color(200, 200, 200)))));
@@ -1488,6 +1634,593 @@ final class PlannerCalculatorView {
         return card.interactive(null, null, tip.append("</html>").toString());
     }
 
+    // An item's price for the plans: yours from your trades this week (Use Your Own Prices), else the GE's
+    private int price(String name) {
+        Long yours = calc.yourPrice(name);
+        return yours != null && yours > 0 ? (int) Math.min(Integer.MAX_VALUE, yours) : icons.price(name);
+    }
+
+    // Milestones opened to their breakdown (by skill, levels and method)
+    private final java.util.Set<String> openSteps = new java.util.HashSet<>();
+
+    private static String stepKey(Skill shown, SkillPlans.Step step) {
+        return shown.name() + ":" + step.from + "-" + step.to + ":" + step.action;
+    }
+
+    // A milestone's money, line by line: for one of what it makes, each material (how many x its price) and what it
+    // sells for, and the net; then the same for all of them
+    private JComponent breakdown(Skill shown, PlannerCalculator.StepRow s) {
+        PlannerCalculator.Row row = s.row;
+        if (row == null || row.needed <= 0) {
+            return null;
+        }
+        List<PlannerCalculator.Need> needs = PlannerCalculator.planMaterials(shown, java.util.Collections.singletonList(s),
+            recipes, calc.owned());
+        JPanel box = new JPanel();
+        box.setLayout(new BoxLayout(box, BoxLayout.Y_AXIS));
+        box.setBackground(new Color(30, 30, 30));
+        box.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createMatteBorder(0, 2, 0, 0, PlannerUi.GROWING),
+            new EmptyBorder(5, 8, 5, 7)));
+        boolean prices = calc.showPrices();
+        box.add(breakdownLine("Each " + s.step.action, "", Color.WHITE, Color.WHITE));
+        double materials = 0;
+        int kinds = 0;
+        for (PlannerCalculator.Need need : needs) {
+            if (need.tool) {
+                continue;
+            }
+            kinds++;
+            double per = (double) need.needed / row.needed;
+            int each = price(need.name);
+            materials += per * each;
+            boolean yours = calc.yourPrice(need.name) != null;
+            box.add(breakdownLine("  " + need.name + " " + amount(per) + (prices ? " x " + String.format("%,d", each)
+                + (yours ? "*" : "") : ""), prices ? String.format("%,.0f", per * each) : "", PlannerUi.MUTED, new Color(220, 150, 140)));
+        }
+        if (prices) {
+            if (materials > 0 && kinds > 1) {
+                box.add(breakdownLine("  Materials", String.format("%,.0f", materials), PlannerUi.MUTED, new Color(220, 150, 140)));
+            }
+            if (row.earnEach != null) {
+                box.add(breakdownLine("  Sells for (after tax)" + (calc.yourPrice(s.step.action) != null ? "*" : ""),
+                    String.format("%,.0f", row.earnEach), PlannerUi.MUTED, new Color(150, 210, 150)));
+            }
+            double net = (row.earnEach == null ? 0 : row.earnEach) - materials;
+            if (materials > 0 || row.earnEach != null) {
+                box.add(breakdownLine("  Net each", (net < 0 ? "-" : "+") + String.format("%,.1f", Math.abs(net)), PlannerUi.MUTED,
+                    net < 0 ? COSTS : PlannerUi.READY));
+            }
+        }
+        box.add(breakdownLine("All " + String.format("%,d", row.needed), "", Color.WHITE, Color.WHITE));
+        for (PlannerCalculator.Need need : needs) {
+            if (need.tool) {
+                box.add(breakdownLine("  " + need.name + " (tool)", need.enough() ? "have it" : "to get", PlannerUi.MUTED,
+                    need.enough() ? PlannerUi.READY : COSTS));
+                continue;
+            }
+            box.add(breakdownLine("  " + need.name + " " + PlannerPanel.gp(need.needed),
+                prices ? PlannerPanel.gp(need.needed * (long) price(need.name)) : "", PlannerUi.MUTED, new Color(220, 150, 140)));
+        }
+        if (prices) {
+            Double cost = row.cost(row.needed);
+            Double earn = row.earn(row.needed);
+            if (earn != null) {
+                box.add(breakdownLine("  Sells for (after tax)", PlannerPanel.gp(Math.round(earn)), PlannerUi.MUTED,
+                    new Color(150, 210, 150)));
+            }
+            if (cost != null || earn != null) {
+                double net = (earn == null ? 0 : earn) - (cost == null ? 0 : cost);
+                box.add(breakdownLine("  Net", signed(net), PlannerUi.MUTED, net < 0 ? COSTS : PlannerUi.READY));
+            }
+        }
+        JComponent wrapped = PlannerUi.fullWidth(box);
+        wrapped.setToolTipText("<html>Each material for one, and for all of this milestone, at "
+            + "Grand Exchange prices (* your price, from your trades this week); sales after the 2% tax</html>");
+        return wrapped;
+    }
+
+    private static JPanel breakdownLine(String left, String right, Color leftColour, Color rightColour) {
+        JPanel line = new JPanel(new BorderLayout(6, 0));
+        line.setOpaque(false);
+        JLabel name = PlannerUi.label(left, leftColour);
+        name.setMinimumSize(new Dimension(0, 0));
+        line.add(name, BorderLayout.CENTER);
+        line.add(PlannerUi.label(right, rightColour), BorderLayout.EAST);
+        return line;
+    }
+
+    // "1", "0.1", "2.5"
+    private static String amount(double value) {
+        return value == Math.rint(value) ? String.format("%,d", (long) value) : String.format("%,.2f", value).replaceAll("0+$", "");
+    }
+
+    // A section of the open plan with a fold arrow: click its header to fold it away or open it (remembered)
+    private JComponent section(String key, String title, String summary, JComponent... actions) {
+        boolean folded = calc.planFolded(key);
+        JComponent row = PlannerUi.group((folded ? "\u25B6 " : "\u25BC ") + title, summary, actions);
+        row.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+        row.setToolTipText(folded ? "Click to open" : "Click to fold away");
+        MouseAdapter click = new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                calc.setPlanFolded(key, !folded);
+                redraw.run();
+            }
+        };
+        row.addMouseListener(click);
+        for (java.awt.Component child : row.getComponents()) {
+            child.addMouseListener(click);
+        }
+        return row;
+    }
+
+    // ---- The money plan: buying, making and selling the plan within a budget ----
+
+    private void fillMoneyPlan(Skill shown, List<PlannerCalculator.StepRow> steps) {
+        // (an ironman doesn't buy: no money plan)
+        if (!calc.showPrices() || calc.ironman()) {
+            return;
+        }
+        long set = calc.planBudget(shown);
+        long coins = calc.coins();
+        long budget = set > 0 ? set : coins;
+        java.util.function.ToIntFunction<String> limits = name -> {
+            int id = icons.itemId(name);
+            return id > 0 ? calc.buyLimit(id) : 0;
+        };
+        Map<String, Integer> owned = calc.owned();
+        // (what you get yourself isn't bought)
+        java.util.Set<String> gathered = new java.util.HashSet<>();
+        for (PlannerCalculator.Need need : PlannerCalculator.planMaterials(shown, steps, recipes, calc.owned())) {
+            if (!need.tool && calc.gathers(shown, need.name)
+                && PlannerCalculator.sourceOf(need.name, shown, data, recipes) != null) {
+                gathered.add(need.name.toLowerCase(Locale.ROOT));
+            }
+        }
+        PlannerCalculator.MoneyPlan money = PlannerCalculator.moneyPlan(shown, steps, recipes, owned, budget, this::price, limits,
+            gathered);
+        if (money.steps.isEmpty()) {
+            return;
+        }
+        long needed = PlannerCalculator.budgetNeeded(shown, steps, recipes, owned, this::price, limits, gathered);
+        JLabel budgetLink = PlannerUi.linkLabel(set > 0 ? "Budget: " + PlannerPanel.gp(set) : "Set a budget",
+            "How much this plan may use (the rest of your cash is left alone)", () -> askBudget(shown, coins));
+        boolean folded = calc.planFolded("money");
+        String summary = money.runsOut != null ? "short " + PlannerPanel.gp(Math.max(0, needed - budget)) : "enough";
+        list.add(section("money", "Money plan", summary, budgetLink));
+        if (folded) {
+            return;
+        }
+        list.add(PlannerUi.spaced(moneySummary(shown, money, set, coins, needed)));
+        JComponent real = moneySoFar(shown, money, set);
+        if (real != null) {
+            list.add(PlannerUi.spaced(real));
+        }
+        for (PlannerCalculator.MoneyStep m : money.steps) {
+            list.add(PlannerUi.spaced(moneyCard(m)));
+        }
+        if (money.runsOut != null) {
+            int after = 0;
+            for (PlannerCalculator.StepRow s : steps) {
+                if (!s.done && s.step.from >= money.runsOut.step.step.to) {
+                    after++;
+                }
+            }
+            if (after > 0) {
+                list.add(note(after + (after == 1 ? " milestone" : " milestones") + " after it not reached",
+                    "With this budget the plan stops at " + money.runsOut.step.step.action + ". A budget of "
+                    + PlannerPanel.gp(needed) + " carries the whole plan, or pick a cheaper method (right-click a "
+                    + "milestone > Find a better method)"));
+            }
+        }
+    }
+
+    private void askBudget(Skill shown, long coins) {
+        String typed = JOptionPane.showInputDialog(list, "How much should this plan use? (like 50m, 1.2b, 750k)\n"
+            + "Leave it empty to use all your coins (" + PlannerPanel.gp(coins) + " seen in your bank and inventory).",
+            calc.planBudget(shown) > 0 ? PlannerPanel.gp(calc.planBudget(shown)) : "");
+        if (typed == null) {
+            return;
+        }
+        long gp = parseGp(typed);
+        if (gp < 0) {
+            JOptionPane.showMessageDialog(list, "Type an amount like 50m, 1.2b or 750k.", "Budget", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        calc.setPlanBudget(shown, gp);
+        redraw.run();
+    }
+
+    /** "50m", "1.2b", "750k", "1,000,000" in gp; 0 for empty; -1 when it isn't an amount. */
+    static long parseGp(String text) {
+        String t = text.trim().toLowerCase(Locale.ROOT).replace(",", "").replace(" ", "").replace("gp", "");
+        if (t.isEmpty()) {
+            return 0;
+        }
+        double times = 1;
+        char last = t.charAt(t.length() - 1);
+        if (last == 'k' || last == 'm' || last == 'b') {
+            times = last == 'k' ? 1e3 : last == 'm' ? 1e6 : 1e9;
+            t = t.substring(0, t.length() - 1);
+        }
+        try {
+            double value = Double.parseDouble(t) * times;
+            return value < 0 ? -1 : (long) Math.floor(value);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    // The budget (set, or your coins), what the plan costs after sales, the budget the whole plan needs, and what's left
+    // at the goal or how short it falls; a click sets the budget
+    private JComponent moneySummary(Skill shown, PlannerCalculator.MoneyPlan money, long set, long coins, long needed) {
+        PlannerUi.Card card = new PlannerUi.Card(set > 0 ? "Budget: " + PlannerPanel.gp(set) : "Budget: not set",
+            set > 0 ? "Your coins" : "Using your coins", PlannerPanel.gp(coins));
+        card.third("Plan costs after sales", signed(-money.loss));
+        card.lowerRight.setForeground(money.loss > 0 ? COSTS : PlannerUi.READY);
+        card.fourth("Budget it needs", PlannerPanel.gp(needed));
+        card.lastRight.setForeground(needed > money.budget ? COSTS : PlannerUi.READY);
+        if (money.runsOut != null) {
+            card.fifth("Short by", PlannerPanel.gp(Math.max(0, needed - money.budget)));
+            card.fifth.setForeground(COSTS);
+            card.fifthRight.setForeground(COSTS);
+            card.setBorder(BorderFactory.createMatteBorder(0, 2, 0, 0, COSTS));
+        } else {
+            card.fifth("Left at the goal", PlannerPanel.gp(Math.max(0, money.end())));
+            card.fifthRight.setForeground(PlannerUi.READY);
+            card.setBorder(BorderFactory.createMatteBorder(0, 2, 0, 0, PlannerUi.READY));
+        }
+        card.icon.setIcon(new ImageIcon(PlannerUi.picture(new PlannerUi.Glyph(PlannerUi.Shape.CALCULATOR, 20,
+            new Color(200, 200, 200)))));
+        String tip = "<html><b>Money plan</b>: buy what each milestone needs that you don't have, make it, sell it, and "
+            + "buy the next lot with what it brought in, so you only need a round's worth at once<br>"
+            + (set > 0 ? "Your budget: " + String.format("%,d", set) + " gp" : "No budget set: it uses all your coins ("
+            + String.format("%,d", coins) + " gp, bank as last opened plus inventory)")
+            + "<br>The whole plan needs a budget of about " + String.format("%,d", needed) + " gp"
+            + "<br>The most one round needs: " + String.format("%,d", money.peak) + " gp"
+            + (money.limitHours > 0 ? "<br>The buy limits make it take at least " + PlannerPanel.formatDuration(money.limitHours * 3600) : "")
+            + "<br>Sales are after the Grand Exchange's 2% tax; prices are today's, so it's a guide"
+            + yourPricesLine(planItems(money))
+            + "<br><font color='#a0a0a0'>Click to set the budget</font></html>";
+        return card.interactive(() -> askBudget(shown, coins), null, tip);
+    }
+
+    // What you've really spent and sold for the plan since the budget was set (your GE trades of its materials and
+    // products), and the budget that leaves; null before any
+    private JComponent moneySoFar(Skill shown, PlannerCalculator.MoneyPlan money, long set) {
+        long since = calc.planBudgetSince(shown);
+        if (set <= 0 || since <= 0) {
+            return null;
+        }
+        java.util.Set<String> items = planItems(money);
+        long[] traded = calc.traded(items, since);
+        if (traded[0] <= 0 && traded[1] <= 0) {
+            return null;
+        }
+        long left = set - traded[0] + traded[1];
+        PlannerUi.Card card = new PlannerUi.Card("Since you set the budget", "Spent buying", PlannerPanel.gp(traded[0]));
+        card.right.setForeground(new Color(220, 150, 140));
+        card.third("Sold for (after tax)", PlannerPanel.gp(traded[1]));
+        card.lowerRight.setForeground(new Color(150, 210, 150));
+        card.fourth("Budget left", PlannerPanel.gp(Math.max(0, left)));
+        card.lastRight.setForeground(left >= 0 ? Color.WHITE : COSTS);
+        card.icon.setIcon(new ImageIcon(PlannerUi.picture(new PlannerUi.Glyph(PlannerUi.Shape.CLOCK, 20,
+            new Color(200, 200, 200)))));
+        card.setBorder(BorderFactory.createMatteBorder(0, 2, 0, 0, PlannerUi.GROWING));
+        String tip = "<html><b>Your real trades</b> for this plan since you set its budget ("
+            + java.time.format.DateTimeFormatter.ofPattern("MMM d, h:mm a").format(java.time.LocalDateTime.ofInstant(
+                java.time.Instant.ofEpochMilli(since), java.time.ZoneId.systemDefault()))
+            + "): buys of its materials and sales of what it makes, as they filled on the Grand Exchange<br>"
+            + "Spent " + String.format("%,d", traded[0]) + " gp, brought in " + String.format("%,d", traded[1])
+            + " gp after the 2% tax<br>Budget " + String.format("%,d", set) + " gp: " + String.format("%,d", left)
+            + " gp left<br><font color='#a0a0a0'>Only trades made while RuneLite ran with the Planner on</font></html>";
+        return card.interactive(null, null, tip);
+    }
+
+    // The items a money plan buys and sells: its materials and each milestone's product
+    private static java.util.Set<String> planItems(PlannerCalculator.MoneyPlan money) {
+        java.util.Set<String> items = new java.util.LinkedHashSet<>();
+        for (PlannerCalculator.MoneyStep m : money.steps) {
+            for (PlannerCalculator.Buy buy : m.buys) {
+                items.add(buy.name);
+            }
+            if (m.step.step.action != null) {
+                items.add(m.step.step.action);
+            }
+        }
+        return items;
+    }
+
+    // "Your prices: Adamant dart tip 185, Adamant dart 190" for a tooltip (empty when none)
+    private String yourPricesLine(java.util.Collection<String> items) {
+        List<String> parts = new ArrayList<>();
+        for (String item : items) {
+            Long yours = calc.yourPrice(item);
+            if (yours != null) {
+                parts.add(PlannerUi.esc(item) + " " + String.format("%,d", yours));
+            }
+        }
+        return parts.isEmpty() ? "" : "<br>Your own prices (your trades this week): " + String.join(", ", parts)
+            + "; GE prices for the rest";
+    }
+
+    // A milestone's money: how much to buy, in how many rounds, what it sells for, and the budget after it
+    private JComponent moneyCard(PlannerCalculator.MoneyStep m) {
+        SkillPlans.Step step = m.step.step;
+        int kinds = m.buys.size();
+        PlannerUi.Card card = new PlannerUi.Card(step.action, kinds == 0 ? "Nothing to buy"
+            : "Buys " + kinds + (kinds == 1 ? " material" : " materials"), m.cost > 0 ? PlannerPanel.gp(m.cost) : "");
+        card.corner.setText(step.from + " → " + step.to);
+        card.right.setForeground(new Color(220, 150, 140));
+        if (m.runsOut) {
+            card.third("Not enough budget", "");
+            card.lower.setForeground(COSTS);
+            card.fourth("It loses", PlannerPanel.gp(m.loss()));
+            card.lastRight.setForeground(COSTS);
+            card.fifth("Budget left", PlannerPanel.gp(Math.max(0, m.budgetBefore)));
+            card.setBorder(BorderFactory.createMatteBorder(0, 2, 0, 0, COSTS));
+        } else {
+            boolean byLimit = m.limitRounds >= m.cashRounds;
+            card.third(m.rounds == 1 ? "In one go" : m.rounds + " rounds of " + PlannerPanel.gp(m.perRound),
+                m.rounds > 1 ? (byLimit ? "buy limit" : "budget") : "");
+            card.fourth(m.earn > 0 ? "Sells " + PlannerPanel.gp(m.earn) : "Nothing to sell", "");
+            net(card.lastRight, (double) m.cost, (double) m.earn, true);
+            card.fifth("Budget after", PlannerPanel.gp(Math.max(0, m.budgetAfter)));
+            card.fifthRight.setForeground(Color.WHITE);
+        }
+        if (m.step.action != null) {
+            picture(card.icon, m.step.action);
+        }
+        StringBuilder tip = new StringBuilder("<html><b>").append(PlannerUi.esc(step.action)).append("</b> ").append(step.from)
+            .append(" to ").append(step.to);
+        for (PlannerCalculator.Buy buy : m.buys) {
+            tip.append("<br>Buy ").append(String.format("%,d", buy.quantity)).append(" ").append(PlannerUi.esc(buy.name))
+                .append(": ").append(String.format("%,d", buy.cost)).append(" gp")
+                .append(buy.limit > 0 ? " (limit " + String.format("%,d", buy.limit) + " a 4 hours)" : "");
+        }
+        if (m.runsOut) {
+            tip.append("<br><font color='#e66e64'>It loses ").append(String.format("%,d", m.loss())).append(" gp; the budget has ")
+                .append(String.format("%,d", Math.max(0, m.budgetBefore))).append(" gp left here</font>");
+        } else if (m.rounds > 1) {
+            tip.append("<br>").append(m.rounds).append(" rounds: buy about ").append(String.format("%,d", m.perRound))
+                .append(" gp of it, make it, sell it, again")
+                .append(m.limitRounds > 1 ? "<br>The buy limits allow one round a 4 hours: at least "
+                    + PlannerPanel.formatDuration((m.limitRounds - 1) * 4 * 3600) : "");
+        }
+        tip.append("<br>Budget: ").append(String.format("%,d", Math.max(0, m.budgetBefore))).append(" gp before")
+            .append(m.runsOut ? "" : ", " + String.format("%,d", Math.max(0, m.budgetAfter)) + " after").append("</html>");
+        return card.interactive(null, null, tip.toString());
+    }
+
+    private static final Color GATHER_BLUE = new Color(138, 180, 248);
+
+    private static String repeat(String text, int times) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < times; i++) {
+            out.append(text);
+        }
+        return out.toString();
+    }
+
+    // "WC", "Mining": a skill's short name for a material row
+    private static String shortSkill(Skill skill) {
+        switch (skill) {
+            case WOODCUTTING:
+                return "(WC)";
+            case FISHING:
+                return "(Fish)";
+            case MINING:
+                return "(Mine)";
+            case HUNTER:
+                return "(Hunt)";
+            default:
+                return "(" + skill.getName() + ")";
+        }
+    }
+
+    // For a material you could get yourself: what gathering (or making) what's short takes, the XP it gives that skill,
+    // and what buying it would cost, so you can see if it's worth it
+    private String gatherTip(Skill shown, PlannerCalculator.Need need, PlannerCalculator.Source source, boolean gather) {
+        if (source == null) {
+            return "";
+        }
+        long shortBy = Math.max(0, need.needed - need.have);
+        StringBuilder tip = new StringBuilder("<br>");
+        tip.append(gather ? "<font color='#8ab4f8'>You get it yourself: " : "Or get it yourself: ")
+            .append(source.gathered ? "gathered" : "made").append(" in ").append(source.skill.getName())
+            .append(" (level ").append(source.action.level).append(")").append(gather ? "</font>" : "");
+        if (gather && shortBy > 0) {
+            List<PlannerCalculator.Link> links = PlannerCalculator.chain(need.name, need.needed, shown, data, recipes,
+                new java.util.HashMap<>(calc.owned()), calc::gathers);
+            if (links.size() > 1) {
+                tip.append("<br>All the way down:");
+                for (PlannerCalculator.Link link : links) {
+                    tip.append("<br>").append(repeat("&nbsp;&nbsp;", link.depth + 1)).append(String.format("%,d", link.toGet()))
+                        .append(" ").append(PlannerUi.esc(link.item)).append(link.skill == null ? " (get it yourself: a drop or shop)"
+                        : " from " + link.skill.getName());
+                }
+            }
+        }
+        if (shortBy > 0) {
+            Supply supply = supply(source, shortBy);
+            tip.append("<br>").append(String.format("%,d", shortBy)).append(" more: ")
+                .append(PlannerPanel.gp(supply.xp)).append(" ").append(source.skill.getName()).append(" xp");
+            if (supply.seconds > 0) {
+                tip.append(", ~").append(PlannerPanel.formatDuration(supply.seconds));
+            }
+            long buying = shortBy * (long) price(need.name);
+            if (buying > 0) {
+                tip.append("<br>Buying them: ").append(PlannerPanel.gp(buying));
+                if (supply.seconds > 0) {
+                    tip.append(" (getting them yourself saves about ").append(PlannerPanel.gp(buying * 3600 / supply.seconds))
+                        .append(" an hour)");
+                }
+            }
+        }
+        tip.append("<br><font color='#a0a0a0'>Right-click to ").append(gather ? "buy it instead" : (source.gathered ? "gather" : "make")
+            + " it yourself").append("</font>");
+        return tip.toString();
+    }
+
+    /** What getting some of a material yourself takes in its skill: the XP, and the time at the guides' rate. */
+    private static final class Supply {
+        long xp;
+        long seconds;
+    }
+
+    private Supply supply(PlannerCalculator.Source source, long quantity) {
+        Supply out = new Supply();
+        List<CalculatorData.Bonus> on = CalculatorData.bonuses(data.calc(source.skill), calc.bonuses(source.skill));
+        double each = CalculatorData.xpEach(source.action, on);
+        out.xp = Math.round(each * quantity);
+        int from = Math.max(calc.xp(source.skill), Experience.getXpForLevel(Math.max(1, source.action.level)));
+        int to = (int) Math.min(Experience.MAX_SKILL_XP, from + out.xp);
+        List<PlannerCalculator.Row> rows = PlannerCalculator.rows(source.skill, java.util.Collections.singletonList(source.action),
+            on, from, to, recipes, training, new java.util.HashMap<>(), this::price, calc::itemPrice);
+        out.seconds = rows.isEmpty() ? 0 : rows.get(0).seconds;
+        return out;
+    }
+
+    // ---- Supplies: materials another skill's plan gets from this skill ----
+
+    // In this skill's Plan view: what the other skills' plans need from it (yew logs for Firemaking), how much you have,
+    // the XP and time it is; a click goes to that plan
+    private void fillSupplies(Skill shown) {
+        // Each skill's plan's materials got yourself, followed all the way down; the steps in this skill
+        Map<String, long[]> totals = new java.util.LinkedHashMap<>();
+        Map<String, PlannerCalculator.Link> links = new java.util.HashMap<>();
+        for (Skill consumer : skills()) {
+            SkillPlans.Plan plan = consumer == shown ? null : calc.plan(consumer);
+            if (plan == null) {
+                continue;
+            }
+            CalculatorData.Calc consumerCalc = data.calc(consumer);
+            List<PlannerCalculator.StepRow> rows = PlannerCalculator.stepRows(consumer, consumerCalc,
+                CalculatorData.bonuses(consumerCalc, calc.bonuses(consumer)), plan, Math.max(0, calc.xp(consumer)), recipes,
+                training, this::price, calc::itemPrice);
+            Map<String, Integer> pool = new java.util.HashMap<>(calc.owned());
+            for (PlannerCalculator.Need need : PlannerCalculator.planMaterials(consumer, rows, recipes, calc.owned())) {
+                if (need.tool || !calc.gathers(consumer, need.name)
+                    || PlannerCalculator.sourceOf(need.name, consumer, data, recipes) == null) {
+                    continue;
+                }
+                for (PlannerCalculator.Link link : PlannerCalculator.chain(need.name, need.needed, consumer, data, recipes, pool,
+                    calc::gathers)) {
+                    if (link.skill != shown) {
+                        continue;
+                    }
+                    String key = link.item + "|" + consumer.name();
+                    long[] sum = totals.computeIfAbsent(key, k -> new long[2]);
+                    sum[0] += link.total;
+                    sum[1] += link.have;
+                    links.put(key, link);
+                }
+            }
+        }
+        if (totals.isEmpty()) {
+            return;
+        }
+        list.add(section("supplies", "Supplies for other plans", String.valueOf(totals.size())));
+        if (calc.planFolded("supplies")) {
+            return;
+        }
+        for (Map.Entry<String, long[]> entry : totals.entrySet()) {
+            Skill consumer = Skill.valueOf(entry.getKey().substring(entry.getKey().indexOf('|') + 1));
+            PlannerCalculator.Link link = links.get(entry.getKey());
+            PlannerCalculator.Need need = new PlannerCalculator.Need(link.item, entry.getValue()[0],
+                (int) Math.min(Integer.MAX_VALUE, entry.getValue()[1]), false);
+            list.add(PlannerUi.spaced(supplyCard(consumer, need,
+                new PlannerCalculator.Source(link.skill, link.action, link.gathered))));
+        }
+    }
+
+    private JComponent supplyCard(Skill consumer, PlannerCalculator.Need need, PlannerCalculator.Source source) {
+        long shortBy = Math.max(0, need.needed - need.have);
+        Supply supply = supply(source, shortBy);
+        PlannerUi.Card card = new PlannerUi.Card(need.name + " for " + consumer.getName(),
+            String.format("%,d / %,d", need.have, need.needed), shortBy > 0 ? "+" + PlannerPanel.gp(supply.xp) + " xp" : "");
+        card.left.setForeground(need.enough() ? PlannerUi.READY : Color.WHITE);
+        card.right.setForeground(PlannerUi.READY);
+        if (shortBy > 0) {
+            long buying = shortBy * (long) price(need.name);
+            card.third(supply.seconds > 0 ? "~" + PlannerPanel.formatDuration(supply.seconds) : "no XP rate",
+                buying > 0 ? "saves " + PlannerPanel.gp(buying) : "");
+            card.lowerRight.setForeground(PlannerUi.READY);
+        } else {
+            card.third("You have them all", "");
+            card.lower.setForeground(PlannerUi.READY);
+        }
+        card.bar(new PlannerUi.Bar(Math.max(0.02, Math.min(1, need.needed > 0 ? (double) need.have / need.needed : 1)),
+            need.enough() ? PlannerUi.READY : PlannerUi.GROWING));
+        picture(card.icon, source.action);
+        String tip = "<html><b>" + PlannerUi.esc(need.name) + "</b> for your " + consumer.getName() + " plan: it needs "
+            + String.format("%,d", need.needed) + ", you have " + String.format("%,d", need.have)
+            + (shortBy > 0 ? "<br>" + (source.gathered ? "Gathering" : "Making") + " the " + String.format("%,d", shortBy)
+            + " more gives " + String.format("%,d", supply.xp) + " " + source.skill.getName() + " xp"
+            + (supply.seconds > 0 ? ", about " + PlannerPanel.formatDuration(supply.seconds) : "") : "")
+            + "<br><font color='#a0a0a0'>Click to go to the " + consumer.getName() + " plan; right-click to add it to "
+            + "your " + source.skill.getName() + " plan</font></html>";
+        // Right-click: make it a milestone of this skill's plan (its action, from your level to where its XP gets you)
+        JPopupMenu menu = new JPopupMenu();
+        if (shortBy > 0) {
+            int from = Math.max(CalculatorData.level(Math.max(0, calc.xp(source.skill)), false), source.action.level);
+            int to = Math.min(99, CalculatorData.level((int) Math.min(Experience.MAX_SKILL_XP,
+                (long) Math.max(calc.xp(source.skill), Experience.getXpForLevel(from)) + supply.xp), false));
+            if (to <= from) {
+                to = Math.min(99, from + 1);
+            }
+            int start = from;
+            int end = to;
+            menu.add(menuItem("Add to the " + source.skill.getName() + " plan (" + start + "-" + end + ")",
+                () -> addSupplyMilestone(source, start, end)));
+        }
+        menu.add(menuItem("Go to the " + consumer.getName() + " plan", () -> pick(consumer)));
+        return card.interactive(() -> pick(consumer), menu, tip);
+    }
+
+    // A supply as a milestone of its skill's plan (a new plan to its end if there isn't one): the milestones there make room
+    private void addSupplyMilestone(PlannerCalculator.Source source, int from, int to) {
+        Skill skill = source.skill;
+        SkillPlans.Plan plan = calc.plan(skill);
+        if (plan == null) {
+            plan = new SkillPlans.Plan(to);
+            plan.name = "Supplies";
+        }
+        List<CalculatorData.Bonus> on = CalculatorData.bonuses(data.calc(skill), calc.bonuses(skill));
+        TrainingData.Method method = SkillPlans.methodFor(training, skill, source.action.name, from, to);
+        PlannerCalculator.insertStep(plan, new SkillPlans.Step(source.action.name, from, to, method == null ? null : method.name,
+            CalculatorData.xpEach(source.action, on)));
+        calc.savePlan(skill, plan);
+        redraw.run();
+    }
+
+    // How long what's short takes to buy at the item's Grand Exchange buy limit (and what's left of it now)
+    private String buyTime(PlannerCalculator.Need need) {
+        if (calc.ironman()) {
+            return "";
+        }
+        Long yours = calc.yourPrice(need.name);
+        String own = yours == null ? "" : "<br>Your price: " + String.format("%,d", yours) + " gp (your trades this week; GE "
+            + String.format("%,d", icons.price(need.name)) + ")";
+        return own + buyLimitTime(need);
+    }
+
+    private String buyLimitTime(PlannerCalculator.Need need) {
+        long shortBy = need.needed - need.have;
+        int id = shortBy > 0 ? icons.itemId(need.name) : -1;
+        int limit = id > 0 ? calc.buyLimit(id) : 0;
+        if (limit <= 0) {
+            return "";
+        }
+        int left = calc.buyLimitLeft(id);
+        long now = left < 0 ? limit : left;
+        long windows = shortBy <= now ? 0 : (shortBy - now + limit - 1) / limit;
+        return "<br>Buy limit " + String.format("%,d", limit) + " every 4 hours"
+            + (left >= 0 ? " (" + String.format("%,d", left) + " left now)" : "")
+            + (windows == 0 ? ": you can buy it all now" : ": about " + PlannerPanel.formatDuration(windows * 4 * 3600)
+            + " to buy it all");
+    }
+
     // What the plan's milestones still need, in full, green when your bank and inventory have all of it, red when not
     private void fillMaterials(Skill shown, List<PlannerCalculator.StepRow> steps) {
         Map<String, Integer> owned = calc.owned();
@@ -1501,20 +2234,28 @@ final class PlannerCalculatorView {
                 short_++;
             }
         }
-        list.add(PlannerUi.group("Materials needed", short_ == 0 ? "you have it all" : short_ + " short"));
+        list.add(section("materials", "Materials needed", short_ == 0 ? "you have it all" : short_ + " short"));
+        if (calc.planFolded("materials")) {
+            return;
+        }
         JPanel box = new JPanel();
         box.setLayout(new BoxLayout(box, BoxLayout.Y_AXIS));
         box.setBackground(PlannerUi.CARD);
         box.setBorder(new EmptyBorder(5, 7, 5, 7));
         for (PlannerCalculator.Need need : needs) {
-            Color colour = need.enough() ? PlannerUi.READY : COSTS;
+            // Got yourself (gathered or made in another skill) or bought
+            PlannerCalculator.Source source = need.tool ? null : PlannerCalculator.sourceOf(need.name, shown, data, recipes);
+            boolean gather = source != null && calc.gathers(shown, need.name);
+            Color colour = need.enough() ? PlannerUi.READY : gather ? GATHER_BLUE : COSTS;
             String amounts = need.tool ? (need.enough() ? "have it" : "missing")
-                : String.format("%,d / %,d", need.have, need.needed);
+                : String.format("%,d / %,d", need.have, need.needed) + (gather && !need.enough() ? " " + shortSkill(source.skill) : "");
             String tip = need.tool ? need.name + ": a tool the plan's methods need" + (need.enough() ? " (you have one)"
                 : " (not in your bank or inventory)")
                 : "<html>" + PlannerUi.esc(need.name) + ": the plan needs " + String.format("%,d", need.needed)
                 + ", you have " + String.format("%,d", need.have) + (need.enough() ? "" : "<br><font color='#e66e64'>"
-                + String.format("%,d", need.needed - need.have) + " short</font>") + "<br>(bank as last opened plus inventory)</html>";
+                + String.format("%,d", need.needed - need.have) + " short</font>") + (gather ? "" : buyTime(need))
+                + gatherTip(shown, need, source, gather)
+                + "<br>(bank as last opened plus inventory)</html>";
             JPanel row = new JPanel(new BorderLayout(6, 0));
             row.setOpaque(false);
             JLabel name = PlannerUi.label(need.name, Color.WHITE);
@@ -1522,13 +2263,27 @@ final class PlannerCalculatorView {
             row.add(name, BorderLayout.CENTER);
             row.add(PlannerUi.label(amounts, colour), BorderLayout.EAST);
             row.setToolTipText(tip);
+            if (source != null) {
+                // Right-click: get it yourself in the other skill, or buy it
+                JPopupMenu menu = new JPopupMenu();
+                String verb = source.gathered ? "Gather" : "Make";
+                menu.add(gather ? menuItem("Buy it instead", () -> {
+                    calc.setGathers(shown, need.name, false);
+                    redraw.run();
+                }) : menuItem(verb + " it yourself (" + source.skill.getName() + ")", () -> {
+                    calc.setGathers(shown, need.name, true);
+                    redraw.run();
+                }));
+                row.setComponentPopupMenu(menu);
+            }
             row.setAlignmentX(JComponent.LEFT_ALIGNMENT);
             row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
             box.add(row);
         }
         list.add(PlannerUi.spaced(box));
         if (!calc.bankSeen()) {
-            list.add(PlannerUi.empty("Open your bank once so these count what's in it; until then it's your inventory."));
+            list.add(note("Open your bank once to count it", "Open your bank once so these count what's in it; until then "
+                + "it's your inventory"));
         }
     }
 
@@ -1543,15 +2298,19 @@ final class PlannerCalculatorView {
     private void fillPlanList(Skill shown, Runnable openPlan) {
         List<SkillPlans.Plan> plans = calc.plans(shown);
         int open = calc.openIndex(shown);
-        list.add(PlannerUi.group(shown.getName() + (calc.goal(shown) > planXp() ? " goal and plans" : " plans"),
-            plans.isEmpty() ? "" : String.valueOf(plans.size()),
+        boolean hasGoal = calc.goal(shown) > planXp();
+        list.add(PlannerUi.group(shown.getName() + (hasGoal ? " goal" : " plans"),
+            plans.isEmpty() || hasGoal ? "" : String.valueOf(plans.size()),
             new PlannerUi.IconButton(new PlannerUi.Glyph(PlannerUi.Shape.PLUS, 14, ColorScheme.LIGHT_GRAY_COLOR),
                 "New plan", () -> newPlan(shown))));
+        // The open plan's contents go under all the plan cards (so every plan is listed together)
+        boolean showOpen = false;
         int level = levelNow();
         int xp = planXp();
         boolean expanded = calc.planExpanded();
         goalCard(shown, plans, xp, level);
-        for (int i = 0; i < plans.size(); i++) {
+        // With a goal, its plans are under it (folded away with it)
+        for (int i = 0; i < plans.size() && (!hasGoal || goalOpen); i++) {
             SkillPlans.Plan plan = plans.get(i);
             int index = i;
             boolean isOpen = i == open;
@@ -1566,7 +2325,7 @@ final class PlannerCalculatorView {
                 + " · " + plan.steps.size() + (plan.steps.size() == 1 ? " milestone" : " milestones"),
                 "lvl " + level + " · " + (int) Math.floor(done * 100) + "%");
             card.right.setForeground(Color.WHITE);
-            card.corner.setText(tracked ? "In tracker" : "");
+            card.corner.setText(tracked ? "Followed" : "");
             card.corner.setForeground(PlannerUi.READY);
             card.noIcon();
             card.bar(new PlannerUi.Bar(done, done >= 1 ? PlannerUi.READY : PlannerUi.GROWING));
@@ -1627,14 +2386,18 @@ final class PlannerCalculatorView {
                 calc.setPlanExpanded(true);
                 openPlan(shown, index);
             };
-            list.add(PlannerUi.spaced(card.interactive(click, menu, "<html><b>"
+            list.add(indent(hasGoal, card.interactive(click, menu, "<html><b>"
                 + PlannerUi.esc(planName(plan, i)) + "</b>: level " + start + " to " + plan.goal + ", " + plan.steps.size()
                 + (plan.steps.size() == 1 ? " milestone" : " milestones") + "<br>" + (int) Math.floor(done * 100)
                 + "% of the way (you're level " + level + ")" + (unfolded ? "<br>Click to fold it away" : "<br>Click to open it")
-                + (tracked ? "<br>It's the plan the tracker follows" : "") + "<br>Right-click to rename, duplicate or delete</html>")));
+                + (tracked ? "<br>Followed: the plan your goal follows in the tracker" : "")
+                + "<br>Right-click to rename, duplicate or delete</html>")));
             if (unfolded && openPlan != null) {
-                openPlan.run();
+                showOpen = true;
             }
+        }
+        if (showOpen) {
+            openPlan.run();
         }
         // Other skills' plans: a click goes to that skill's
         Map<Skill, Integer> others = calc.planCounts(skills());
@@ -1660,6 +2423,30 @@ final class PlannerCalculatorView {
 
     // The skill's goal (set here or in the Skilling Helper: the same goal) as a card like a plan's: its levels, what
     // it's set to train, how far along; click it for Change goal, Remove goal and Make a plan for it
+    // A plan card under the goal: set in a little, so it reads as the goal's
+    private static JComponent indent(boolean under, JComponent card) {
+        JComponent spaced = PlannerUi.spaced(card);
+        if (!under) {
+            return spaced;
+        }
+        JPanel row = new JPanel(new BorderLayout());
+        row.setBackground(PlannerUi.BACKGROUND);
+        row.setBorder(new EmptyBorder(0, 12, 0, 0));
+        row.add(spaced, BorderLayout.CENTER);
+        return PlannerUi.fullWidth(row);
+    }
+
+    // The tracked plan's name in this skill's list ("Plan 2"), or "your plan"
+    private String planNameOf(Skill shown, SkillPlans.Plan tracked) {
+        List<SkillPlans.Plan> plans = calc.plans(shown);
+        for (int i = 0; i < plans.size(); i++) {
+            if (calc.isTracked(shown, plans.get(i))) {
+                return planName(plans.get(i), i);
+            }
+        }
+        return "your plan";
+    }
+
     private void goalCard(Skill shown, List<SkillPlans.Plan> plans, int xp, int level) {
         int goal = calc.goal(shown);
         if (goal <= xp) {
@@ -1669,13 +2456,13 @@ final class PlannerCalculatorView {
         double done = goal > start ? Math.max(0, Math.min(1, (double) (xp - start) / (goal - start))) : 1;
         SkillPlans.Plan tracked = calc.trackedPlan(shown);
         String pick = calc.goalPick(shown);
-        String follows = tracked != null ? "plan: " + (tracked.name != null ? tracked.name : "exported plan")
-            : pick != null ? pick : "the wiki's suggestion";
+        String follows = tracked != null ? "follows " + (tracked.name != null ? tracked.name : planNameOf(shown, tracked))
+            : pick != null ? "via " + pick : "the wiki's methods";
         PlannerUi.Card card = new PlannerUi.Card((goalOpen ? "▾ " : "▸ ") + "Goal: " + goalText(goal),
             CalculatorData.level(start, false) + " → " + CalculatorData.level(goal, true) + " · " + follows,
             "lvl " + level + " · " + (int) Math.floor(done * 100) + "%");
         card.right.setForeground(Color.WHITE);
-        card.corner.setText(calc.trackerInstalled() ? "In tracker" : "");
+        card.corner.setText(plans.isEmpty() ? "" : plans.size() + (plans.size() == 1 ? " plan" : " plans"));
         card.corner.setForeground(GOAL_GOLD);
         card.noIcon();
         card.bar(new PlannerUi.Bar(done, GOAL_GOLD));
@@ -1689,14 +2476,8 @@ final class PlannerCalculatorView {
             redraw.run();
         }, menu, "<html><b>Your " + shown.getName() + " goal</b>: " + goalText(goal) + ", " + String.format("%,d", goal - xp)
             + " xp to go (" + (int) Math.floor(done * 100) + "% from where it was set)<br>Training: " + PlannerUi.esc(follows)
-            + "<br>The same goal as the Skilling Helper's: change it in either<br>Click for more; right-click to change or "
-            + "remove it</html>")));
-        if (goalOpen) {
-            list.add(linkRow(PlannerUi.linkLabel("Change goal", "Set a new level or XP for it", () -> changeSkillGoal(shown)),
-                PlannerUi.linkLabel("Make a plan", "A new plan to this goal, with milestones you can change",
-                    () -> planFromGoal(shown, goal, pick)),
-                PlannerUi.linkLabel("Remove goal", "Clear the goal (in the Skilling Helper too)", () -> removeSkillGoal(shown))));
-        }
+            + "<br>The same goal as the Skilling Helper's: change it in either<br>Click to " + (goalOpen ? "fold away" : "show")
+            + " its plans; right-click to change it, make a plan for it or remove it</html>")));
     }
 
     private void changeSkillGoal(Skill shown) {
@@ -1768,9 +2549,29 @@ final class PlannerCalculatorView {
     }
 
     // "Levels 45-50: no milestone (the tracker suggests the wiki's method)"
-    private static JComponent gap(int from, int to) {
-        return note("Levels " + from + "-" + to + ": no milestone here (the wiki's suggestion)", "No milestone covers these "
-            + "levels; the Skilling Helper suggests the wiki's method there");
+    // Levels no milestone covers: click to add one for them
+    private JComponent gap(Skill shown, SkillPlans.Plan plan, int from, int to) {
+        JComponent row = note("Levels " + from + "-" + to + ": no milestone (click to add)",
+            "No milestone covers these levels; the Skilling Helper suggests the wiki's method there. Click to add a "
+            + "milestone for them");
+        clickable(row, new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                stepDialog(shown, -1, plan.goal, null, from, to);
+            }
+        });
+        return row;
+    }
+
+    // The click on it and everything in it (a label with a tooltip would keep it otherwise)
+    private static void clickable(java.awt.Component component, MouseAdapter click) {
+        component.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        component.addMouseListener(click);
+        if (component instanceof java.awt.Container) {
+            for (java.awt.Component child : ((java.awt.Container) component).getComponents()) {
+                clickable(child, click);
+            }
+        }
     }
 
     // Buttons side by side, sharing the width: each link drawn as a button (a card with its text centred, lighter
@@ -1811,28 +2612,31 @@ final class PlannerCalculatorView {
         SkillPlans.Step step = s.step;
         PlannerCalculator.Row row = s.row;
         boolean now = step.covers(level);
-        PlannerUi.Card card = new PlannerUi.Card(step.action, s.done ? "done: you're level " + level : PlannerPanel.gp(s.xp) + " xp"
-            + (now ? " left" : ""), row != null && !s.done ? String.format("%,d", row.needed) : "");
+        // Ticked off once you're past its end; on the way, how far through it you are
+        int percent = (int) Math.floor(s.progress * 100);
+        boolean started = !s.done && s.progress > 0;
+        // One thing a line: how many to go (and how far through) and the XP; the time and gp per XP; what the
+        // materials cost and what the products sell for; the net
+        String left = s.done ? "Done (you're level " + level + ")"
+            : row != null ? String.format("%,d", row.needed) + " to go" + (started ? " · " + percent + "%" : "")
+            : (started ? percent + "% done" : "");
+        PlannerUi.Card card = new PlannerUi.Card(step.action, left, s.done ? "" : PlannerPanel.gp(s.xp) + " xp");
         card.corner.setText(step.from + " → " + step.to);
         card.corner.setForeground(now ? Color.WHITE : PlannerUi.MUTED);
         card.right.setForeground(Color.WHITE);
         if (row != null && !s.done) {
             Double perXp = calc.showPrices() ? row.perXp() : null;
-            String time = row.seconds > 0 ? "~" + PlannerPanel.formatDuration(row.seconds) : "";
-            String note = s.tooLow() ? (time.isEmpty() ? "" : time + " · ") + "needs level " + s.action.level : time;
-            if (!note.isEmpty() || perXp != null) {
-                card.third(note, perXp == null ? "" : gpPerXp(perXp));
-                if (s.tooLow()) {
-                    card.lower.setForeground(COSTS);
-                }
-                if (perXp != null) {
-                    card.lowerRight.setForeground(perXp < 0 ? COSTS : PlannerUi.READY);
-                }
+            String time = row.seconds > 0 ? "~" + PlannerPanel.formatDuration(row.seconds)
+                + (row.xpHour > 0 ? " (" + PlannerPanel.gp(row.xpHour) + "/hr)" : "") : "no XP rate";
+            card.third(s.tooLow() ? "needs level " + s.action.level : time, perXp == null ? "" : gpPerXp(perXp));
+            if (s.tooLow()) {
+                card.lower.setForeground(COSTS);
             }
-            String money = calc.showPrices() ? money(row.cost(row.needed), row.earn(row.needed), "") : null;
-            if (money != null) {
-                card.fourth(money, "");
-                net(card.lastRight, row.cost(row.needed), row.earn(row.needed), true);
+            if (perXp != null) {
+                card.lowerRight.setForeground(perXp < 0 ? COSTS : PlannerUi.READY);
+            }
+            if (calc.showPrices()) {
+                priceLines(card, row.cost(row.needed), row.earn(row.needed));
             }
         }
         if (s.action != null) {
@@ -1842,12 +2646,23 @@ final class PlannerCalculatorView {
         }
         if (s.done) {
             card.dim();
-        } else if (now) {
-            card.setBorder(BorderFactory.createMatteBorder(0, 2, 0, 0, SUGGESTED));
+            card.left.setForeground(PlannerUi.READY);
+            card.bar(new PlannerUi.Bar(1, PlannerUi.READY));
+        } else {
+            if (now) {
+                card.setBorder(BorderFactory.createMatteBorder(0, 2, 0, 0, SUGGESTED));
+            }
+            if (started) {
+                card.bar(new PlannerUi.Bar(Math.max(0.02, s.progress), PlannerUi.GROWING));
+            }
         }
         JPopupMenu menu = new JPopupMenu();
         menu.add(menuItem("Edit...", () -> stepDialog(shown, index, plan.goal)));
-        menu.add(menuItem("Change method (pick an action)", () -> {
+        if (!s.done) {
+            int insertFrom = Math.max(step.from, Math.min(step.to - 1, level));
+            menu.add(menuItem("Insert a milestone in it...", () -> stepDialog(shown, -1, plan.goal, null, insertFrom, step.to)));
+        }
+        menu.add(menuItem("Find a better method...", () -> {
             picking = index;
             search.setText("");
             redraw.run();
@@ -1859,11 +2674,36 @@ final class PlannerCalculatorView {
             menu.add(menuItem("Move down", () -> change(shown, p -> PlannerCalculator.swapSteps(p, index, index + 1))));
         }
         menu.add(menuItem("Delete", () -> change(shown, p -> PlannerCalculator.removeStep(p, index))));
+        // Its materials: get each yourself (gathered or made in another skill) or buy it
+        if (row != null && !s.done) {
+            boolean first = true;
+            for (PlannerCalculator.Need need : PlannerCalculator.planMaterials(shown, java.util.Collections.singletonList(s),
+                recipes, calc.owned())) {
+                PlannerCalculator.Source source = need.tool ? null : PlannerCalculator.sourceOf(need.name, shown, data, recipes);
+                if (source == null) {
+                    continue;
+                }
+                if (first) {
+                    menu.addSeparator();
+                    first = false;
+                }
+                boolean gather = calc.gathers(shown, need.name);
+                menu.add(menuItem(gather ? "Buy " + need.name + " instead"
+                    : (source.gathered ? "Gather " : "Make ") + need.name + " yourself (" + source.skill.getName() + ")", () -> {
+                        calc.setGathers(shown, need.name, !gather);
+                        redraw.run();
+                    }));
+            }
+        }
         StringBuilder tip = new StringBuilder("<html><b>").append(PlannerUi.esc(step.action)).append("</b>: level ")
             .append(step.from).append(" to ").append(step.to);
         if (s.done) {
             tip.append(" (done)");
         } else if (row != null) {
+            if (started) {
+                tip.append("<br>").append(percent).append("% done: ").append(String.format("%,d", s.made())).append(" of ")
+                    .append(String.format("%,d", s.total)).append(" actions");
+            }
             tip.append("<br>").append(String.format("%,d", s.xp)).append(" xp: ").append(String.format("%,d", row.needed))
                 .append(" actions at ").append(xp(row.xpEach)).append(" xp each");
             if (row.seconds > 0) {
@@ -1877,15 +2717,22 @@ final class PlannerCalculatorView {
         if (step.method != null) {
             tip.append("<br><font color='#a0a0a0'>Guide method: ").append(PlannerUi.esc(step.method)).append("</font>");
         }
-        tip.append("<br><font color='#a0a0a0'>Right-click to edit, move or delete</font></html>");
-        return card.interactive(null, menu, tip.toString());
+        tip.append("<br><font color='#a0a0a0'>Click for its breakdown (each material and its price); right-click to edit, "
+            + "move or delete</font></html>");
+        String open = stepKey(shown, step);
+        return card.interactive(() -> {
+            if (!openSteps.remove(open)) {
+                openSteps.add(open);
+            }
+            redraw.run();
+        }, menu, tip.toString());
     }
 
     // Exporting to the Skilling Helper: only offered when it (or the Toolbelt) is installed
     private JComponent exportRow(Skill shown, SkillPlans.Plan plan, List<CalculatorData.Bonus> on, CalculatorData.Calc skillCalc) {
         if (!calc.trackerInstalled()) {
-            return PlannerUi.empty("Install Snuffy's Skilling Helper to follow this plan on its goal card: Export to "
-                + "tracker sends it there.");
+            return note("Export to tracker: with the Skilling Helper", "Install Snuffy's Skilling Helper to follow this plan "
+                + "on its goal card: Export to tracker sends it there");
         }
         JPanel row = new JPanel(new BorderLayout(6, 0));
         row.setBackground(PlannerUi.CARD);
@@ -1950,6 +2797,28 @@ final class PlannerCalculatorView {
         }
     }
 
+    // The Current and Target levels when you've typed either (else null): Add to plan uses them as the milestone's levels
+    private int[] typedLevels(Skill shown) {
+        if (currentOverride == null && calc.savedTarget(shown) <= 0) {
+            return null;
+        }
+        int from = CalculatorData.level(current(), false);
+        int to = Math.min(99, CalculatorData.level(target(), false));
+        return from >= 1 && to > from ? new int[] {from, to} : null;
+    }
+
+    // In at exactly these levels: the milestones it overlaps make room (split around it when it's inside one)
+    private void addToPlanAt(Skill shown, CalculatorData.Action action, double xpEach, int from, int to) {
+        SkillPlans.Plan plan = calc.plan(shown);
+        if (plan == null) {
+            plan = new SkillPlans.Plan(Math.max(to, newGoal()));
+        }
+        TrainingData.Method method = SkillPlans.methodFor(training, shown, action.name, from, to);
+        PlannerCalculator.insertStep(plan, new SkillPlans.Step(action.name, from, to, method == null ? null : method.name, xpEach));
+        calc.savePlan(shown, plan);
+        redraw.run();
+    }
+
     private void addToPlan(Skill shown, CalculatorData.Action action, double xpEach) {
         SkillPlans.Plan plan = calc.plan(shown);
         if (plan == null) {
@@ -1957,23 +2826,17 @@ final class PlannerCalculatorView {
         }
         TrainingData.Method method = SkillPlans.methodFor(training, shown, action.name, action.level, plan.goal);
         if (!PlannerCalculator.addStep(plan, action, xpEach, method == null ? null : method.name, levelNow())) {
-            // The plan is full up to its goal: offer to raise the goal so this goes on after it
-            String typed = plan.goal >= 99 ? null : JOptionPane.showInputDialog(list, "Your plan already ends at level "
-                + plan.goal + ". Raise its goal to fit " + action.name + " after it (level " + (plan.goal + 1) + "-99):",
-                99);
-            int goal = typed == null ? -1 : parse(typed);
-            if (goal <= plan.goal || goal > 99) {
-                if (plan.goal >= 99) {
-                    JOptionPane.showMessageDialog(list, "Your plan already reaches 99 from level " + Math.max(levelNow(),
-                        action.level) + ". Right-click a milestone to edit its levels or change its method.", "Add to plan",
-                        JOptionPane.INFORMATION_MESSAGE);
+            // No room on its own (the plan's milestones already reach its goal): ask which levels, filled in from its
+            // level to the end of the milestone it lands in; it goes in there and that one makes room
+            int start = Math.min(98, Math.max(levelNow(), action.level));
+            int end = plan.goal > start ? plan.goal : 99;
+            for (SkillPlans.Step step : plan.steps) {
+                if (step.from <= start && start < step.to) {
+                    end = step.to;
                 }
-                return;
             }
-            PlannerCalculator.raiseGoal(plan, goal);
-            if (!PlannerCalculator.addStep(plan, action, xpEach, method == null ? null : method.name, levelNow())) {
-                return;
-            }
+            stepDialog(shown, -1, plan.goal, action.name, start, end);
+            return;
         }
         calc.savePlan(shown, plan);
         redraw.run();
@@ -2030,6 +2893,16 @@ final class PlannerCalculatorView {
 
     // Adds a milestone (index -1) or edits one: its method and levels. Neighbours that met it still meet it.
     private void stepDialog(Skill shown, int index, int goal) {
+        stepDialog(shown, index, goal, null, 0, 0);
+    }
+
+    /**
+     * Adds (index -1) or edits a milestone. A new one can come with its method and levels filled in ({@code
+     * presetAction}, {@code presetFrom}-{@code presetTo}; null and 0 for the usual guesses). A new one goes in at its own
+     * levels: the milestones it overlaps make room, split around it when it's inside one (74-81 inside 74-99 leaves
+     * 81-99).
+     */
+    private void stepDialog(Skill shown, int index, int goal, String presetAction, int presetFrom, int presetTo) {
         SkillPlans.Plan plan = calc.plan(shown);
         if (plan == null) {
             plan = new SkillPlans.Plan(goal);
@@ -2045,6 +2918,8 @@ final class PlannerCalculatorView {
         int last = plan.steps.isEmpty() ? levelNow() : plan.steps.get(plan.steps.size() - 1).to;
         if (editing != null) {
             method.setSelectedItem(editing.action);
+        } else if (presetAction != null) {
+            method.setSelectedItem(presetAction);
         } else {
             CalculatorData.Action best = null;
             for (CalculatorData.Action action : actions) {
@@ -2056,8 +2931,9 @@ final class PlannerCalculatorView {
                 method.setSelectedItem(best.name);
             }
         }
-        JTextField from = new JTextField(String.valueOf(editing != null ? editing.from : Math.min(last, plan.goal - 1)));
-        JTextField to = new JTextField(String.valueOf(editing != null ? editing.to : plan.goal));
+        JTextField from = new JTextField(String.valueOf(editing != null ? editing.from : presetFrom > 0 ? presetFrom
+            : Math.min(last, plan.goal - 1)));
+        JTextField to = new JTextField(String.valueOf(editing != null ? editing.to : presetTo > 0 ? presetTo : plan.goal));
         JPanel form = new JPanel(new GridLayout(0, 1, 2, 2));
         form.add(new JLabel("Method"));
         form.add(method);
@@ -2065,6 +2941,11 @@ final class PlannerCalculatorView {
         form.add(from);
         form.add(new JLabel("To level"));
         form.add(to);
+        if (editing == null && !plan.steps.isEmpty()) {
+            JLabel hint = new JLabel("<html><font color='#a0a0a0'>Milestones it overlaps make room: inside one, it's<br>"
+                + "split around it (74-81 in 74-99 leaves 81-99)</font></html>");
+            form.add(hint);
+        }
         if (JOptionPane.showConfirmDialog(list, form, editing != null ? "Edit milestone" : "Add a milestone",
             JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) {
             return;
@@ -2081,14 +2962,8 @@ final class PlannerCalculatorView {
         List<CalculatorData.Bonus> on = CalculatorData.bonuses(skillCalc, calc.bonuses(shown));
         double xpEach = action == null ? 0 : CalculatorData.xpEach(action, on);
         if (editing != null) {
-            for (SkillPlans.Step other : plan.steps) {
-                if (other != editing && other.to == editing.from) {
-                    other.to = start;
-                } else if (other != editing && other.from == editing.to) {
-                    other.from = end;
-                }
-            }
-            plan.steps.removeIf(other -> other != editing && other.to <= other.from);
+            // Made shorter: the levels it gave up become a gap to fill (click it), the others stay as they are;
+            // made longer: the ones it grows into make room
             editing.action = name;
             editing.from = start;
             editing.to = end;

@@ -309,6 +309,24 @@ public interface PlannerConfig extends CommonConfig {
         return true;
     }
 
+    /** Whether plans treat you as an ironman: from your account, or always, or never. */
+    enum IronmanPlans {
+        AUTO("From your account"),
+        ALWAYS("Always"),
+        NEVER("Never");
+
+        private final String label;
+
+        IronmanPlans(String label) {
+            this.label = label;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
     /** How your own timers say they're done: the voice line, or a game sound. */
     enum TimerSound {
         VOICE("Voice line", -1),
@@ -374,6 +392,28 @@ public interface PlannerConfig extends CommonConfig {
         position = 11
     )
     default boolean chatTimerDone() {
+        return true;
+    }
+
+    @ConfigItem(
+        keyName = "plannerGeLimits",
+        name = "GE Buy Limits",
+        description = "<div width='300'>In TIMERS: each item you've bought on the Grand Exchange in the last 4 hours, how much of its buy limit that's used and when it resets; for a buy offer that isn't filling, whether it's the limit or your price (yours against the current one). From your own offers as they fill (the game keeps no times for trades): fills while you were logged out count from when they were seen, so their reset is \"by\" that time. Information only",
+        section = plannerTimersSection,
+        position = 12
+    )
+    default boolean plannerGeLimits() {
+        return true;
+    }
+
+    @ConfigItem(
+        keyName = "chatGeLimitReset",
+        name = "Chat: Buy Limit Reset",
+        description = "<div width='300'>Chat message when an item's buy limit resets, for one you'd used up or still have a buy offer for",
+        section = plannerTimersSection,
+        position = 13
+    )
+    default boolean chatGeLimitReset() {
         return true;
     }
 
@@ -505,6 +545,39 @@ public interface PlannerConfig extends CommonConfig {
         position = 3
     )
     default boolean plannerPlanOverlay() {
+        return true;
+    }
+
+    @ConfigItem(
+        keyName = "plannerIronman",
+        name = "Plan As Ironman",
+        description = "<div width='300'>Plans for an ironman: every material you can gather or make comes from the skill that gets it (logs from Woodcutting, bars from Smithing and their ore from Mining), listed in those skills' plans as supplies, and the money plan is left out. From your account: when the game says it's an ironman account",
+        section = plannerCalculatorSection,
+        position = 6
+    )
+    default IronmanPlans plannerIronman() {
+        return IronmanPlans.AUTO;
+    }
+
+    @ConfigItem(
+        keyName = "plannerYourPrices",
+        name = "Use Your Own Prices",
+        description = "<div width='300'>In plans and the money plan, an item you've bought or sold on the Grand Exchange in the last week goes at what you really paid or got (your trades' average, as they filled), not the GE price; marked \"your price\". Trades are seen while RuneLite runs with the Planner on",
+        section = plannerCalculatorSection,
+        position = 5
+    )
+    default boolean plannerYourPrices() {
+        return true;
+    }
+
+    @ConfigItem(
+        keyName = "chatPlanMilestone",
+        name = "Chat: Milestone Done",
+        description = "<div width='300'>A game chat message when you finish a milestone of your plan (the one open in the Calculator), naming the next one, and when you reach the plan's goal",
+        section = plannerCalculatorSection,
+        position = 4
+    )
+    default boolean chatPlanMilestone() {
         return true;
     }
 

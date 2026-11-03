@@ -32,6 +32,8 @@ final class PlannerConfigDefaults {
         defaults.store("timerSoundRepeats", config.timerSoundRepeats());
         defaults.store("voiceTimerDone", config.voiceTimerDone());
         defaults.store("chatTimerDone", config.chatTimerDone());
+        defaults.store("plannerGeLimits", config.plannerGeLimits());
+        defaults.store("chatGeLimitReset", config.chatGeLimitReset());
         defaults.store("plannerShowSlayer", config.plannerShowSlayer());
         defaults.store("plannerShowDrops", config.plannerShowDrops());
         defaults.store("plannerOtherLoot", config.plannerOtherLoot());
@@ -43,6 +45,9 @@ final class PlannerConfigDefaults {
         defaults.store("plannerCalcPrices", config.plannerCalcPrices());
         defaults.store("plannerCalcHideMembers", config.plannerCalcHideMembers());
         defaults.store("plannerPlanOverlay", config.plannerPlanOverlay());
+        defaults.store("plannerIronman", config.plannerIronman());
+        defaults.store("plannerYourPrices", config.plannerYourPrices());
+        defaults.store("chatPlanMilestone", config.chatPlanMilestone());
         defaults.store("compactOverlays", config.compactOverlays());
     }
 }

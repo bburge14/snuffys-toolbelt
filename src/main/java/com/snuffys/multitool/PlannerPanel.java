@@ -119,10 +119,13 @@ class PlannerPanel extends PluginPanel {
     private final Timer notesSave = new Timer(1000, e -> saveNotes());
     private String notesProfile;
 
+    private final PlannerGeLimits geLimits;
+
     PlannerPanel(PlannerConfig config, ConfigManager configManager, PlannerChores chores, PlannerTimers timers,
-                 FarmingTracker farming, PlannerSlayer slayer, DropTracker drops, PlannerNotes notes, Icons icons,
-                 PlannerCalculatorView calculator) {
+                 FarmingTracker farming, PlannerSlayer slayer, DropTracker drops, PlannerNotes notes, PlannerGeLimits geLimits,
+                 Icons icons, PlannerCalculatorView calculator) {
         super(false);
+        this.geLimits = geLimits;
         this.config = config;
         this.configManager = configManager;
         this.chores = chores;
@@ -259,6 +262,20 @@ class PlannerPanel extends PluginPanel {
     /** Package-private for the preview: the Calculator on this skill, in this view, with this search. */
     void showCalculator(Skill skill, PlannerCalculator.Mode mode, String search) {
         calcPage.view.preview(skill, mode, search);
+        showTab("calculator");
+    }
+
+    /** Package-private for the preview: a milestone of the skill's plan opened to its breakdown. */
+    void showCalculatorBreakdown(Skill skill, int milestone) {
+        calcPage.view.preview(skill, PlannerCalculator.Mode.PLAN, "");
+        calcPage.view.previewBreakdown(skill, milestone);
+        showTab("calculator");
+    }
+
+    /** Package-private for the preview: the Calculator choosing a method for this milestone of the open plan. */
+    void showCalculatorPicking(Skill skill, int milestone) {
+        calcPage.view.preview(skill, PlannerCalculator.Mode.PLAN, "");
+        calcPage.view.previewPicking(milestone);
         showTab("calculator");
     }
 
@@ -616,11 +633,36 @@ class PlannerPanel extends PluginPanel {
             if (running > 0) {
                 parts.add(running + " running");
             }
+            // Grand Exchange buy limits: each item bought in the last 4 hours, and each buy offer (to the minute)
+            long nowMillis = System.currentTimeMillis();
+            List<PlannerGeLimits.Window> limits = config.plannerGeLimits() && geLimits != null ? geLimits.windows()
+                : new ArrayList<>();
+            int atLimit = 0;
+            for (PlannerGeLimits.Window w : limits) {
+                atLimit += w.atLimit() ? 1 : 0;
+                key.append(w.item).append(w.name).append(w.bought).append('/').append(w.limit).append('@').append(w.resetsAt)
+                    .append(w.price);
+                if (w.offer != null) {
+                    key.append(w.offer.state).append(w.offer.sold).append('/').append(w.offer.total).append(w.offer.price);
+                }
+                key.append(';');
+            }
+            key.append(nowMillis / 60000);
             String summary = String.join(" \u00b7 ", parts);
             key.append(summary);
+            int limitCount = atLimit;
             return new Built(key.toString(), () -> {
                 add(PlannerUi.header("Timers", new JLabel(summary), plus("Add a timer", PlannerPanel.this::addTimer)));
+                if (!limits.isEmpty()) {
+                    add(PlannerUi.group("GE buy limits", limitCount > 0 ? limitCount + " at the limit" : "4-hour windows"));
+                    for (PlannerGeLimits.Window w : limits) {
+                        card(limitCard(w, nowMillis));
+                    }
+                }
                 if (patches.isEmpty() && birdhouses == 0 && list.isEmpty()) {
+                    if (!limits.isEmpty()) {
+                        return;
+                    }
                     add(PlannerUi.empty("No timers yet. Visit a farming patch, seed your bird houses or press + to add "
                         + "one."));
                     return;
@@ -642,6 +684,83 @@ class PlannerPanel extends PluginPanel {
                 }
             });
         }
+    }
+
+    // An item's buy limit: how much of it this window has used and when it resets; for a buy offer, whether it's the
+    // limit or the price keeping it from filling
+    private JComponent limitCard(PlannerGeLimits.Window w, long now) {
+        String used = w.limit > 0 ? String.format("%,d / %,d bought", w.bought, w.limit)
+            : String.format("%,d bought", w.bought) + (w.bought > 0 ? " (limit unknown)" : "");
+        PlannerUi.Card card = new PlannerUi.Card(w.name, used, "");
+        // The reset time in the corner ("by" when the window's first buy came in while you were away)
+        card.corner.setText(w.resetsAt > 0 ? (w.exact ? "" : "by ") + clock(w.resetsAt) : "");
+        PlannerGeLimits.Slot offer = w.offer;
+        String until = w.resetsAt > now ? formatDuration((w.resetsAt - now + 59999) / 60000 * 60) : "";
+        String verdict;
+        Color tone;
+        if (w.atLimit()) {
+            verdict = "At the limit: more " + (w.exact ? "in " : "within ") + until;
+            tone = COSTS_RED;
+        } else if (offer != null && offer.buying() && offer.sold < offer.total) {
+            if (w.price > 0 && offer.price < w.price) {
+                verdict = "Under the limit: it's your price";
+                tone = HudColors.WARN;
+            } else if (w.limit > 0) {
+                verdict = String.format("Under the limit: %,d more can fill", w.left());
+                tone = PlannerUi.READY;
+            } else {
+                verdict = "Buying (limit unknown)";
+                tone = PlannerUi.MUTED;
+            }
+        } else {
+            verdict = w.limit > 0 ? String.format("%,d more can be bought now", w.left()) : "";
+            tone = PlannerUi.MUTED;
+        }
+        card.third(verdict, "");
+        card.lower.setForeground(tone);
+        if (offer != null) {
+            String state = offer.buying() ? "Buying" : offer.state == net.runelite.api.GrandExchangeOfferState.BOUGHT ? "Bought"
+                : "Cancelled";
+            card.fourth(String.format("%s %,d/%,d", state, offer.sold, offer.total),
+                offer.buying() && w.price > 0 && offer.price < w.price ? gp(offer.price) + " vs " + gp(w.price) : "@ " + gp(offer.price));
+            if (offer.buying() && w.price > 0 && offer.price < w.price) {
+                card.lastRight.setForeground(HudColors.WARN);
+            }
+        }
+        if (w.limit > 0) {
+            card.bar(new PlannerUi.Bar(Math.max(0.02, Math.min(1, (double) w.bought / w.limit)),
+                w.atLimit() ? COSTS_RED : PlannerUi.GROWING));
+        }
+        image(card.icon, icons.item(w.item, 1, false), 1f);
+        StringBuilder tip = new StringBuilder("<html><b>").append(PlannerUi.esc(w.name)).append("</b>");
+        if (w.limit > 0) {
+            tip.append("<br>Buy limit: ").append(String.format("%,d", w.limit)).append(" every 4 hours");
+        }
+        if (w.resetsAt > 0) {
+            tip.append("<br>Bought in this window: ").append(String.format("%,d", w.bought)).append("; it ")
+                .append(w.exact ? "resets at " : "resets by ").append(clock(w.resetsAt)).append(" (4 hours from its first buy)");
+            if (!w.exact) {
+                tip.append("<br><font color='#a0a0a0'>Its first buy filled while you were away (or before this was on), so "
+                    + "it may reset sooner</font>");
+            }
+        }
+        if (offer != null) {
+            tip.append("<br>Your offer: ").append(String.format("%,d", offer.total)).append(" at ").append(String.format("%,d", offer.price))
+                .append(" gp each, ").append(String.format("%,d", offer.sold)).append(" filled");
+        }
+        if (w.price > 0) {
+            tip.append("<br>Grand Exchange price now: ").append(String.format("%,d", w.price)).append(" gp");
+        }
+        tip.append("<br><font color='#a0a0a0'>From your offers as they fill (the game keeps no times for trades)</font></html>");
+        return card.interactive(null, null, tip.toString());
+    }
+
+    private static final Color COSTS_RED = new Color(230, 110, 100);
+
+    // "3:42 PM", today's clock
+    private static String clock(long millis) {
+        return java.time.format.DateTimeFormatter.ofPattern("h:mm a").format(java.time.LocalDateTime.ofInstant(
+            java.time.Instant.ofEpochMilli(millis), java.time.ZoneId.systemDefault()));
     }
 
     private static String birdhouseStatus(long fullAt, long now) {
@@ -1511,15 +1630,20 @@ class PlannerPanel extends PluginPanel {
     /** The CALCULATOR tab: its parts above the list stay while you type ({@link PlannerCalculatorView}). */
     private final class CalculatorPage extends Page {
         final PlannerCalculatorView view;
+        // The parts above the list, which don't scroll
+        final PlannerUi.Column top = new PlannerUi.Column();
 
         CalculatorPage(PlannerCalculatorView view) {
             super("calculator", "Calculator: actions to your target level", PlannerUi.Shape.CALCULATOR);
             this.view = view;
             target = view.list;
-            view.addTo(column, this::refresh);
-            // The plan bar stays under the scrolling list, so you can compare while you scroll
+            // The skill, its target, bonuses and the Actions | Banked | Plan tabs stay put at the top; only the list
+            // under them scrolls; the plan bar stays under it, so you can compare while you scroll
+            top.setBackground(PlannerUi.BACKGROUND);
+            view.addTo(top, column, this::refresh);
             JPanel both = new JPanel(new BorderLayout(0, 6));
             both.setBackground(PlannerUi.BACKGROUND);
+            both.add(top, BorderLayout.NORTH);
             both.add(scroll, BorderLayout.CENTER);
             both.add(view.dock, BorderLayout.SOUTH);
             body = both;
@@ -1534,6 +1658,8 @@ class PlannerPanel extends PluginPanel {
         void refresh() {
             view.update();
             super.refresh();
+            top.revalidate();
+            top.repaint();
             column.revalidate();
             column.repaint();
         }

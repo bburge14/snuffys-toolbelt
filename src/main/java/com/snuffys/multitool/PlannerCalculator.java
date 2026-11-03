@@ -27,6 +27,7 @@ import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.StatChanged;
 import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
@@ -103,7 +104,9 @@ class PlannerCalculator {
 
     @Inject
     PlannerCalculator(Client client, ConfigManager configManager, ItemManager itemManager, PlannerView view,
-                      PlannerConfig config, PluginFamily family) {
+                      PlannerConfig config, PluginFamily family, Alerts alerts, PlannerGeLimits geLimits) {
+        this.alerts = alerts;
+        this.geLimits = geLimits;
         this.client = client;
         this.configManager = configManager;
         this.itemManager = itemManager;
@@ -131,7 +134,76 @@ class PlannerCalculator {
         Integer before = seenXp.put(event.getSkill(), event.getXp());
         if (before != null && event.getXp() > before) {
             lastTrained = event.getSkill();
+            milestonesPassed(event.getSkill(), before, event.getXp());
         }
+    }
+
+    private final Alerts alerts;
+    private final PlannerGeLimits geLimits;
+
+    /** An item's GE buy limit (0: unknown or not looked up yet). */
+    int buyLimit(int itemId) {
+        return geLimits == null ? 0 : geLimits.limit(itemId);
+    }
+
+    /** Your own price for an item from your trades this week (null: none, or the setting's off). */
+    Long yourPrice(String name) {
+        return geLimits == null || !config.plannerYourPrices() ? null : geLimits.yourPrice(name);
+    }
+
+    /** What you really spent and got for these items since then: {spent, brought in}. */
+    long[] traded(java.util.Collection<String> names, long since) {
+        return geLimits == null ? new long[2] : geLimits.traded(names, since);
+    }
+
+    /** Changes when a trade is recorded. */
+    int tradesVersion() {
+        return geLimits == null ? 0 : geLimits.tradesVersion();
+    }
+
+    /** How many buy limits are known so far (for redrawing when one comes in). */
+    int buyLimitsKnown() {
+        return geLimits == null ? 0 : geLimits.known();
+    }
+
+    /** What's left of an item's buy limit right now (-1: its whole limit, or not known). */
+    int buyLimitLeft(int itemId) {
+        return geLimits == null ? -1 : geLimits.leftNow(itemId);
+    }
+
+    // Your plan's milestones ticked off as you pass them: a chat message for each one finished (with the next), and
+    // one when you reach the plan's goal
+    private void milestonesPassed(Skill skill, int before, int now) {
+        SkillPlans.Plan plan = canPlan() ? plan(skill) : null;
+        for (String message : milestoneMessages(skill, plan, before, now)) {
+            alerts.chat("chatPlanMilestone", message);
+        }
+    }
+
+    /** What to say when XP goes from {@code before} to {@code now}: each milestone ended between them, and the goal. */
+    static List<String> milestoneMessages(Skill skill, SkillPlans.Plan plan, int before, int now) {
+        List<String> out = new ArrayList<>();
+        if (plan == null || now <= before) {
+            return out;
+        }
+        int goal = Experience.getXpForLevel(Math.min(99, Math.max(2, plan.goal)));
+        for (SkillPlans.Step step : plan.steps) {
+            int end = Experience.getXpForLevel(Math.min(99, Math.max(2, step.to)));
+            if (before < end && now >= end && end < goal) {
+                SkillPlans.Step next = null;
+                for (SkillPlans.Step other : plan.steps) {
+                    if (other != step && other.from <= step.to && step.to < other.to && (next == null || other.from > next.from)) {
+                        next = other;
+                    }
+                }
+                out.add(skill.getName() + " plan: milestone done, " + step.action + " (" + step.from + "-" + step.to + ")."
+                    + (next != null ? " Next: " + next.action + " to " + next.to + "." : ""));
+            }
+        }
+        if (before < goal && now >= goal) {
+            out.add(skill.getName() + " plan complete: level " + plan.goal + " reached!");
+        }
+        return out;
     }
 
     private final Map<Skill, Integer> seenXp = new EnumMap<>(Skill.class);
@@ -210,6 +282,15 @@ class PlannerCalculator {
 
     @Subscribe
     public void onGameTick(GameTick event) {
+        // An ironman account (any kind): its plans get everything themselves (kept, so logged out still knows)
+        if (client.getGameState() == GameState.LOGGED_IN && configManager.getRSProfileKey() != null) {
+            boolean iron = client.getVarbitValue(VarbitID.IRONMAN) != 0;
+            if (accountIron == null || accountIron != iron) {
+                accountIron = iron;
+                configManager.setRSProfileConfiguration(GROUP, "accountIronman", String.valueOf(iron));
+                view.update();
+            }
+        }
         if (!bankLoaded && configManager.getRSProfileKey() != null) {
             bankLoaded = true;
             Map<String, Integer> saved = SkillGoals.savedBank(configManager);
@@ -467,6 +548,72 @@ class PlannerCalculator {
         }
     }
 
+    /** The money set aside for a skill's plan, in gp (0: all your coins). Kept per account. */
+    long planBudget(Skill skill) {
+        if (!canPlan()) {
+            return 0;
+        }
+        String saved = configManager.getRSProfileConfiguration(GROUP, "planBudget." + skill.name());
+        try {
+            return saved == null ? 0 : Math.max(0, Long.parseLong(saved));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    void setPlanBudget(Skill skill, long gp) {
+        if (!canPlan()) {
+            return;
+        }
+        if (gp <= 0) {
+            configManager.unsetRSProfileConfiguration(GROUP, "planBudget." + skill.name());
+            configManager.unsetRSProfileConfiguration(GROUP, "planBudgetAt." + skill.name());
+        } else {
+            configManager.setRSProfileConfiguration(GROUP, "planBudget." + skill.name(), String.valueOf(gp));
+            configManager.setRSProfileConfiguration(GROUP, "planBudgetAt." + skill.name(), String.valueOf(System.currentTimeMillis()));
+        }
+    }
+
+    /** When the budget was set (its real spending counts from then), or 0. */
+    long planBudgetSince(Skill skill) {
+        String saved = canPlan() ? configManager.getRSProfileConfiguration(GROUP, "planBudgetAt." + skill.name()) : null;
+        try {
+            return saved == null ? 0 : Long.parseLong(saved);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** The plan view's sections folded away ("milestones", "materials", "money"), as a comma list. */
+    String planFolds() {
+        String saved = configManager.getConfiguration(GROUP, "planFolded");
+        return saved == null ? "" : saved;
+    }
+
+    boolean planFolded(String section) {
+        return ("," + planFolds() + ",").contains("," + section + ",");
+    }
+
+    void setPlanFolded(String section, boolean folded) {
+        java.util.Set<String> all = new java.util.LinkedHashSet<>();
+        for (String part : planFolds().split(",")) {
+            if (!part.isEmpty()) {
+                all.add(part);
+            }
+        }
+        if (folded) {
+            all.add(section);
+        } else {
+            all.remove(section);
+        }
+        configManager.setConfiguration(GROUP, "planFolded", String.join(",", all));
+    }
+
+    /** Coins in your bank (as last opened) and inventory. */
+    long coins() {
+        return owned().getOrDefault("coins", 0);
+    }
+
     /** Keeps this target for the skill (0 forgets it). */
     void setSavedTarget(Skill skill, int xp) {
         if (configManager.getRSProfileKey() == null) {
@@ -687,7 +834,7 @@ class PlannerCalculator {
         Double profit;
         /** What one's materials cost (GE), or null (no recipe, or a material without a price). */
         Double costEach;
-        /** What one product is worth (GE): what it makes or gathers; null when it's nothing that sells. */
+        /** What selling one product gets you (GE price less its 2% tax); null when it's nothing that sells. */
         Double earnEach;
         /** How many you have or can make from what you own. */
         int have;
@@ -771,7 +918,7 @@ class PlannerCalculator {
                 }
                 // The action is one item; a recipe can make several at once (10 darts from 10 tips and 10 feathers)
                 cost /= per;
-                double worth = consumed(recipe) ? 0 : price.applyAsInt(recipe.name);
+                double worth = consumed(recipe) ? 0 : afterTax(price.applyAsInt(recipe.name));
                 double profit = worth - cost;
                 if (row.profit == null || profit > row.profit) {
                     row.profit = profit;
@@ -786,7 +933,7 @@ class PlannerCalculator {
                 if (worth <= 0) {
                     worth = price.applyAsInt(action.name);
                 }
-                row.earnEach = worth > 0 ? (double) worth : null;
+                row.earnEach = worth > 0 ? afterTax(worth) : null;
             }
         }
         TrainingData.Method method = training == null ? null : rated(training, skill, action, level);
@@ -795,6 +942,17 @@ class PlannerCalculator {
             row.seconds = (long) Math.ceil((target - xp) * 3600.0 / method.xpHour);
         }
         return row;
+    }
+
+    /**
+     * What selling one at this price gets you: the Grand Exchange keeps 2% of each sale (rounded down, so nothing on
+     * one under 50 gp), at most 5M an item.
+     */
+    static double afterTax(double price) {
+        if (price <= 0) {
+            return price;
+        }
+        return price - Math.min(Math.floor(price * 0.02), 5_000_000);
     }
 
     /**
@@ -962,6 +1120,10 @@ class PlannerCalculator {
         final int xp;
         /** Already past its end. */
         final boolean done;
+        /** How far through it you are, 0 (not started) to 1 (done). */
+        double progress;
+        /** Actions for the whole milestone, start to end (0 without an action): with {@code row.needed}, how many are done. */
+        long total;
 
         StepRow(SkillPlans.Step step, CalculatorData.Action action, Row row, int xp, boolean done) {
             this.step = step;
@@ -969,6 +1131,11 @@ class PlannerCalculator {
             this.row = row;
             this.xp = xp;
             this.done = done;
+        }
+
+        /** Actions done of it so far (0 without an action). */
+        long made() {
+            return row == null ? 0 : Math.max(0, total - row.needed);
         }
 
         /** You can't do its action at its start level. */
@@ -1003,7 +1170,11 @@ class PlannerCalculator {
             boolean done = xpNow >= end;
             Row row = action == null ? null : row(skill, action, on, start, end, Math.max(step.from,
                 CalculatorData.level(xpNow, false)), recipes, training, Collections.emptyMap(), price, itemPrice);
-            out.add(new StepRow(step, action, row, done ? 0 : Math.max(0, end - start), done));
+            StepRow s = new StepRow(step, action, row, done ? 0 : Math.max(0, end - start), done);
+            int from = Experience.getXpForLevel(Math.max(1, step.from));
+            s.progress = done ? 1 : end > from ? Math.max(0, Math.min(1, (double) (xpNow - from) / (end - from))) : 0;
+            s.total = action == null ? 0 : CalculatorData.needed(action, on, from, end);
+            out.add(s);
         }
         return out;
     }
@@ -1139,6 +1310,384 @@ class PlannerCalculator {
             }
         }
         return new ArrayList<>(out.values());
+    }
+
+    // ---- Getting materials yourself: gather or make one in another skill instead of buying it ----
+
+    /** Where a material can come from: a skill and its action, gathered there (logs, ore, fish) or made by its recipe. */
+    static final class Source {
+        final Skill skill;
+        final CalculatorData.Action action;
+        final boolean gathered;
+
+        Source(Skill skill, CalculatorData.Action action, boolean gathered) {
+            this.skill = skill;
+            this.action = action;
+            this.gathered = gathered;
+        }
+    }
+
+    /**
+     * Where to get a material yourself instead of buying it, for a plan in {@code consumer}: a gathering skill with an
+     * action of its name first (Woodcutting for logs), else a skill whose recipe makes it (Smithing for bars), not
+     * one that uses it up (Firemaking's "Yew logs" burns them) or the plan's own skill. Null when there's none.
+     */
+    static Source sourceOf(String material, Skill consumer, CalculatorData data, RecipeData recipes) {
+        for (Skill skill : GATHERING) {
+            if (skill == consumer) {
+                continue;
+            }
+            CalculatorData.Calc calc = data.calc(skill);
+            CalculatorData.Action action = calc == null ? null : CalculatorData.named(calc, material);
+            if (action != null) {
+                return new Source(skill, action, true);
+            }
+        }
+        for (Skill skill : data.skills()) {
+            if (skill == consumer || GATHERING.contains(skill)) {
+                continue;
+            }
+            CalculatorData.Action action = CalculatorData.named(data.calc(skill), material);
+            if (action == null) {
+                continue;
+            }
+            for (RecipeData.Recipe recipe : recipesFor(skill, action, recipes)) {
+                boolean fromItself = recipe.materials.keySet().stream().anyMatch(m -> m.equalsIgnoreCase(material));
+                if (!consumed(recipe) && !fromItself) {
+                    return new Source(skill, action, false);
+                }
+            }
+        }
+        return null;
+    }
+
+    private volatile Boolean accountIron;
+
+    /** Whether plans are an ironman's (Plan As Ironman: from the account, or always, or never). */
+    boolean ironman() {
+        switch (config.plannerIronman()) {
+            case ALWAYS:
+                return true;
+            case NEVER:
+                return false;
+            default:
+                if (accountIron != null) {
+                    return accountIron;
+                }
+                String saved = configManager.getRSProfileKey() == null ? null
+                    : configManager.getRSProfileConfiguration(GROUP, "accountIronman");
+                return Boolean.parseBoolean(saved);
+        }
+    }
+
+    // The materials you get yourself, per plan's skill ("FIREMAKING:yew logs"), kept per account; and the ones you buy
+    // (only matters for an ironman, where getting it yourself is the default)
+    private static final String GATHER_KEY = "planGather";
+    private static final String BUY_KEY = "planBuy";
+
+    /** The choices as saved: "SKILL:material" each. */
+    List<String> gatherChoices() {
+        String saved = canPlan() ? configManager.getRSProfileConfiguration(GROUP, GATHER_KEY) : null;
+        List<String> out = new ArrayList<>();
+        for (String part : saved == null ? new String[0] : saved.split(",")) {
+            if (part.contains(":")) {
+                out.add(part);
+            }
+        }
+        return out;
+    }
+
+    private List<String> choices(String key) {
+        String saved = canPlan() ? configManager.getRSProfileConfiguration(GROUP, key) : null;
+        List<String> out = new ArrayList<>();
+        for (String part : saved == null ? new String[0] : saved.split(",")) {
+            if (part.contains(":")) {
+                out.add(part);
+            }
+        }
+        return out;
+    }
+
+    /** Whether a plan in {@code skill} gets this material itself (else it's bought): chosen, or an ironman's default. */
+    boolean gathers(Skill skill, String material) {
+        String entry = skill.name() + ":" + material.toLowerCase(Locale.ROOT);
+        return choices(GATHER_KEY).contains(entry) || (ironman() && !choices(BUY_KEY).contains(entry));
+    }
+
+    void setGathers(Skill skill, String material, boolean gather) {
+        if (!canPlan()) {
+            return;
+        }
+        String entry = skill.name() + ":" + material.toLowerCase(Locale.ROOT);
+        List<String> gathered = choices(GATHER_KEY);
+        List<String> bought = choices(BUY_KEY);
+        gathered.remove(entry);
+        bought.remove(entry);
+        (gather ? gathered : bought).add(entry);
+        configManager.setRSProfileConfiguration(GROUP, GATHER_KEY, String.join(",", gathered));
+        configManager.setRSProfileConfiguration(GROUP, BUY_KEY, String.join(",", bought));
+    }
+
+    /** What the choices are now, for redrawing when one changes. */
+    String gatherState() {
+        return ironman() + "|" + choices(GATHER_KEY) + "|" + choices(BUY_KEY);
+    }
+
+    /** One step of getting a material yourself: in this skill, this many of the item (its action that many times). */
+    static final class Link {
+        /** The skill, or null: nothing gathers or makes it (a drop, a shop: get it yourself). */
+        final Skill skill;
+        final CalculatorData.Action action;
+        final String item;
+        /** How many it takes in all, how many you have toward it, and how many times the action. */
+        final long total;
+        final long have;
+        final long actions;
+        final boolean gathered;
+        /** 0 for the plan's own material, 1 for what that's made from, and on. */
+        final int depth;
+
+        Link(Skill skill, CalculatorData.Action action, String item, long total, long have, long actions, boolean gathered,
+             int depth) {
+            this.skill = skill;
+            this.action = action;
+            this.item = item;
+            this.total = total;
+            this.have = have;
+            this.actions = actions;
+            this.gathered = gathered;
+            this.depth = depth;
+        }
+
+        long toGet() {
+            return Math.max(0, total - have);
+        }
+    }
+
+    /**
+     * Everything getting {@code quantity} of a material yourself takes, all the way down: where it comes from (gathered,
+     * or made, and then what that's made from, where {@code gathers} says that's got yourself too: an ironman's whole
+     * chain, bars from Smithing and their ore from Mining). What you own counts first ({@code pool} is used up as it
+     * goes). Four steps deep at most; a material nothing makes is a link with no skill.
+     */
+    static List<Link> chain(String material, long quantity, Skill consumer, CalculatorData data, RecipeData recipes,
+                            Map<String, Integer> pool, java.util.function.BiPredicate<Skill, String> gathers) {
+        List<Link> out = new ArrayList<>();
+        chain(material, quantity, consumer, data, recipes, pool, gathers, 0, out);
+        return out;
+    }
+
+    private static void chain(String material, long quantity, Skill consumer, CalculatorData data, RecipeData recipes,
+                              Map<String, Integer> pool, java.util.function.BiPredicate<Skill, String> gathers, int depth,
+                              List<Link> out) {
+        String key = material.toLowerCase(Locale.ROOT);
+        long have = Math.min(quantity, pool.getOrDefault(key, 0));
+        pool.put(key, (int) Math.max(0, pool.getOrDefault(key, 0) - have));
+        long need = quantity - have;
+        // (the plan's own skill isn't a source for its own materials; further down the same skill can be: dart tips and
+        // the bars they're made from are both Smithing)
+        Source source = sourceOf(material, depth == 0 ? consumer : null, data, recipes);
+        if (source == null) {
+            out.add(new Link(null, null, material, quantity, have, 0, false, depth));
+            return;
+        }
+        if (source.gathered) {
+            out.add(new Link(source.skill, source.action, material, quantity, have, need, true, depth));
+            return;
+        }
+        RecipeData.Recipe recipe = null;
+        for (RecipeData.Recipe r : recipesFor(source.skill, source.action, recipes)) {
+            if (!consumed(r)) {
+                recipe = r;
+                break;
+            }
+        }
+        if (recipe == null) {
+            out.add(new Link(null, null, material, quantity, have, 0, false, depth));
+            return;
+        }
+        int per = perMake(recipe, source.action);
+        long goes = (need + per - 1) / per;
+        out.add(new Link(source.skill, source.action, material, quantity, have, goes, false, depth));
+        if (depth >= 3 || goes <= 0) {
+            return;
+        }
+        for (Map.Entry<String, Integer> sub : recipe.materials.entrySet()) {
+            if (gathers.test(source.skill, sub.getKey()) && sourceOf(sub.getKey(), null, data, recipes) != null) {
+                chain(sub.getKey(), goes * sub.getValue(), source.skill, data, recipes, pool, gathers, depth + 1, out);
+            }
+        }
+    }
+
+    // ---- The money plan: buying, making and selling within a budget ----
+
+    /** One thing to buy for a milestone. */
+    static final class Buy {
+        final String name;
+        final long quantity;
+        final long cost;
+        /** Its buy limit every 4 hours (0: not known). */
+        final int limit;
+
+        Buy(String name, long quantity, long cost, int limit) {
+            this.name = name;
+            this.quantity = quantity;
+            this.cost = cost;
+            this.limit = limit;
+        }
+    }
+
+    /** A milestone's money: what to buy, in how many rounds of buy, make and sell, and the budget after it. */
+    static final class MoneyStep {
+        final StepRow step;
+        final List<Buy> buys = new ArrayList<>();
+        /** What buying it all costs, and what selling the products gets you (after tax). */
+        long cost;
+        long earn;
+        /** Rounds: the most of the budget's and the buy limits'. */
+        long rounds;
+        long limitRounds;
+        long cashRounds;
+        /** Cash one round needs. */
+        long perRound;
+        long budgetBefore;
+        long budgetAfter;
+        /** The budget can't carry it (not even a round at a time). */
+        boolean runsOut;
+
+        MoneyStep(StepRow step) {
+            this.step = step;
+        }
+
+        long loss() {
+            return cost - earn;
+        }
+    }
+
+    /** The whole money plan: each milestone's, the most cash needed at once, and the time the buy limits take at least. */
+    static final class MoneyPlan {
+        long budget;
+        final List<MoneyStep> steps = new ArrayList<>();
+        long peak;
+        long loss;
+        long limitHours;
+        /** The milestone the budget runs out at, or null. */
+        MoneyStep runsOut;
+
+        long end() {
+            return steps.isEmpty() ? budget : steps.get(steps.size() - 1).budgetAfter;
+        }
+    }
+
+    /**
+     * Plans the money for the milestones still to do, in order, within {@code budget}: each one buys what it needs that
+     * you don't own (owned materials are used up milestone by milestone), makes and sells in rounds, as many as the buy
+     * limits (one round a 4 hours each) and the budget need: a round buys only what the budget left then can pay for
+     * (losses come out of it as it goes). Stops where the budget can't carry a milestone.
+     */
+    static MoneyPlan moneyPlan(Skill skill, List<StepRow> steps, RecipeData recipes, Map<String, Integer> owned, long budget,
+                               ToIntFunction<String> price, ToIntFunction<String> limit) {
+        return moneyPlan(skill, steps, recipes, owned, budget, price, limit, java.util.Collections.emptySet());
+    }
+
+    /** As above; the materials in {@code gathered} (lower case) you get yourself, so they're never bought. */
+    static MoneyPlan moneyPlan(Skill skill, List<StepRow> steps, RecipeData recipes, Map<String, Integer> owned, long budget,
+                               ToIntFunction<String> price, ToIntFunction<String> limit, Set<String> gathered) {
+        MoneyPlan plan = new MoneyPlan();
+        plan.budget = budget;
+        Map<String, Integer> pool = new HashMap<>(owned);
+        long cash = budget;
+        for (StepRow s : steps) {
+            if (s.done || s.row == null || s.row.needed <= 0) {
+                continue;
+            }
+            MoneyStep m = new MoneyStep(s);
+            m.budgetBefore = cash;
+            for (Need need : planMaterials(skill, java.util.Collections.singletonList(s), recipes, pool)) {
+                String key = need.name.toLowerCase(Locale.ROOT);
+                long have = need.tool ? need.have : pool.getOrDefault(key, 0);
+                long toBuy = Math.max(0, need.needed - have);
+                if (!need.tool) {
+                    pool.put(key, (int) Math.max(0, have - need.needed));
+                }
+                if (toBuy > 0 && !gathered.contains(key)) {
+                    long each = Math.max(0, price.applyAsInt(need.name));
+                    m.buys.add(new Buy(need.name, toBuy, toBuy * each, need.tool ? 0 : Math.max(0, limit.applyAsInt(need.name))));
+                    m.cost += toBuy * each;
+                    if (need.tool) {
+                        // (a tool, once: in your pool from here on)
+                        pool.put(key, 1);
+                    }
+                }
+            }
+            Double earn = s.row.earn(s.row.needed);
+            m.earn = earn == null ? 0 : Math.round(earn);
+            for (Buy buy : m.buys) {
+                if (buy.limit > 0) {
+                    m.limitRounds = Math.max(m.limitRounds, (buy.quantity + buy.limit - 1) / buy.limit);
+                }
+            }
+            long loss = m.loss();
+            if (m.cost <= 0) {
+                m.cashRounds = 1;
+            } else if (loss > 0) {
+                // Each round's sale pays for the next round's buy; the budget shrinks by the loss as it goes, so the
+                // last round has the least: rounds x (budget - loss) >= what the sales bring back
+                long spare = cash - loss;
+                if (spare <= 0 || (m.earn == 0 && cash < m.cost)) {
+                    m.runsOut = true;
+                } else {
+                    m.cashRounds = Math.max(1, (m.earn + spare - 1) / spare);
+                }
+            } else {
+                m.cashRounds = cash <= 0 ? 0 : Math.max(1, (m.cost + cash - 1) / cash);
+                m.runsOut = cash <= 0;
+            }
+            m.rounds = Math.max(1, Math.max(m.limitRounds, m.cashRounds));
+            m.perRound = m.cost <= 0 ? 0 : (m.cost + m.rounds - 1) / m.rounds;
+            plan.steps.add(m);
+            if (m.runsOut) {
+                m.budgetAfter = cash;
+                plan.runsOut = m;
+                break;
+            }
+            cash -= loss;
+            m.budgetAfter = cash;
+            plan.peak = Math.max(plan.peak, m.perRound);
+            plan.loss += loss;
+            plan.limitHours += Math.max(0, m.limitRounds - 1) * 4;
+        }
+        return plan;
+    }
+
+    /**
+     * The smallest budget that carries the whole plan (to about 1%): the money plan run at budgets in between, the
+     * least one that doesn't run out. 0 when it needs nothing.
+     */
+    static long budgetNeeded(Skill skill, List<StepRow> steps, RecipeData recipes, Map<String, Integer> owned,
+                             ToIntFunction<String> price, ToIntFunction<String> limit) {
+        return budgetNeeded(skill, steps, recipes, owned, price, limit, java.util.Collections.emptySet());
+    }
+
+    static long budgetNeeded(Skill skill, List<StepRow> steps, RecipeData recipes, Map<String, Integer> owned,
+                             ToIntFunction<String> price, ToIntFunction<String> limit, Set<String> gathered) {
+        long high = 0;
+        for (MoneyStep m : moneyPlan(skill, steps, recipes, owned, Long.MAX_VALUE / 4, price, limit, gathered).steps) {
+            high += Math.max(0, m.cost);
+        }
+        if (high <= 0) {
+            return 0;
+        }
+        long low = 0;
+        while (high - low > Math.max(1000, high / 100)) {
+            long mid = low + (high - low) / 2;
+            if (moneyPlan(skill, steps, recipes, owned, mid, price, limit, gathered).runsOut == null) {
+                high = mid;
+            } else {
+                low = mid;
+            }
+        }
+        return high;
     }
 
     // A tool you have: any item named for it ("Hammer" in "Imcando hammer", "Knife")
