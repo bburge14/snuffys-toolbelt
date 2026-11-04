@@ -2,6 +2,11 @@
 
 Each version's changes, newest first.
 
+## 1.2.0 (2026-11-03)
+
+- Planner supplies are fixed: their method and XP stay (Edit moves where one starts, its end follows), other milestones, Add to plan, wiki suggestions and a lower goal fit around them, never over them
+- Planner supplies: a second supply no longer replaces the first (onto a milestone of the same method, or after the other supplies), supplies already in this skill's plan aren't listed, and a milestone says what it keeps for which plan (left out of its sales and net)
+
 ## 1.1.4 (2026-11-03)
 
 - Planner: ironman plans (from the account, or always/never): materials got yourself all the way down (bars, their ore and coal), supplies in each skill on the chain, no money plan; gather or buy from a milestone's menu; a supply can be added to its skill's plan
