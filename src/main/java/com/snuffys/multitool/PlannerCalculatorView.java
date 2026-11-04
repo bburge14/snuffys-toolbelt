@@ -1549,6 +1549,7 @@ final class PlannerCalculatorView {
                 PlannerUi.linkLabel("Add a milestone", "Pick its method and levels", () -> stepDialog(shown, -1, goal))));
             return;
         }
+        fitSupplyMilestones(shown, skillCalc, on, plan, now);
         List<PlannerCalculator.StepRow> steps = PlannerCalculator.stepRows(shown, skillCalc, on, plan, now, recipes, training,
             this::price, calc::itemPrice);
         PlannerCalculator.Totals totals = PlannerCalculator.totals(plan, steps, now);
@@ -2367,6 +2368,66 @@ final class PlannerCalculatorView {
 
     // In this skill's Plan view: what the other skills' plans need from it (yew logs for Firemaking), how much you have,
     // the XP and time it is; a click goes to that plan
+    /**
+     * A supply milestone is the supplies: it ends wherever getting all that the other plans still need takes you (from
+     * your XP now, or its start), so its levels follow them; the milestones after it make room. Saved when it moves (the
+     * tracker's copy too, when it has this plan).
+     */
+    private void fitSupplyMilestones(Skill shown, CalculatorData.Calc skillCalc, List<CalculatorData.Bonus> on,
+                                     SkillPlans.Plan plan, int now) {
+        SkillPlans.Plan before = plan.copy();
+        boolean changed = false;
+        for (SkillPlans.Step step : new ArrayList<>(plan.steps)) {
+            if (step.supplies.isEmpty()) {
+                continue;
+            }
+            long items = suppliesToGet(step);
+            CalculatorData.Action action = CalculatorData.named(skillCalc, step.action);
+            if (items <= 0 || action == null) {
+                continue;
+            }
+            int per = 1;
+            for (RecipeData.Recipe recipe : PlannerCalculator.recipesFor(shown, action, recipes)) {
+                per = Math.max(per, PlannerCalculator.perMake(recipe, action));
+            }
+            long actions = (items + per - 1) / per;
+            double each = CalculatorData.xpEach(action, on);
+            long start = Math.max(now, Experience.getXpForLevel(Math.max(1, step.from)));
+            long end = Math.min(Experience.MAX_SKILL_XP, start + (long) Math.ceil(actions * each));
+            int to = Math.min(99, Math.max(step.from + 1, CalculatorData.level((int) end, false)));
+            if (to == step.to) {
+                continue;
+            }
+            int oldTo = step.to;
+            // (shorter: the milestone after it starts where it ends now)
+            for (SkillPlans.Step next : plan.steps) {
+                if (next != step && next.supplies.isEmpty() && next.from == oldTo && to < oldTo) {
+                    next.from = to;
+                }
+            }
+            plan.steps.remove(step);
+            step.to = to;
+            PlannerCalculator.insertStep(plan, step);
+            plan.goal = Math.max(plan.goal, to);
+            changed = true;
+        }
+        if (changed) {
+            calc.savePlanQuietly(shown, plan, before);
+        }
+    }
+
+    // How many of a supply milestone's items the other plans still need that you don't have
+    private long suppliesToGet(SkillPlans.Step step) {
+        long total = 0;
+        for (SkillPlans.Supply supply : step.supplies) {
+            long[] still = stillNeeded(supply.skill, supply.item);
+            long wanted = still == null ? supply.quantity : Math.min(supply.quantity, still[0]);
+            long have = still == null ? 0 : still[1];
+            total += Math.max(0, wanted - have);
+        }
+        return total;
+    }
+
     /**
      * What another skill's plan still needs of an item it gets from here ([0]) and how many you have ([1]): its
      * materials from your XP there on, so what it's already made or burned isn't counted again.
@@ -3220,11 +3281,15 @@ final class PlannerCalculatorView {
         boolean started = !s.done && s.progress > 0;
         // One thing a line: how many to go (and how far through) and the XP; the time and gp per XP; what the
         // materials cost and what the products sell for; the net
-        String left = s.done ? "Done (you're level " + level + ")"
+        long supplyItems = step.supplies.isEmpty() ? 0 : suppliesToGet(step);
+        String left = !step.supplies.isEmpty() && supplyItems > 0
+            ? "Get " + PlannerPanel.gp(supplyItems) + " for " + skillName(step.supplies.get(0).skill)
+            : s.done ? "Done (you're level " + level + ")"
             : row != null ? String.format("%,d", row.needed) + " to go" + (started ? " · " + percent + "%" : "")
             : (started ? percent + "% done" : "");
         PlannerUi.Card card = new PlannerUi.Card(step.action, left, s.done ? "" : PlannerPanel.gp(s.xp) + " xp");
-        card.corner.setText(step.from + " → " + step.to);
+        // (a supply milestone's end is where its supplies take you: about)
+        card.corner.setText(step.from + " → " + (step.supplies.isEmpty() ? "" : "~") + step.to);
         card.corner.setForeground(now ? Color.WHITE : PlannerUi.MUTED);
         card.right.setForeground(Color.WHITE);
         if (row != null && !s.done) {
@@ -3246,11 +3311,17 @@ final class PlannerCalculatorView {
         if (step.note != null) {
             card.line(step.note, "");
         }
+        if (row != null && row.dropped && !s.done) {
+            JLabel[] drop = card.line("Powerlevelling: dropped, not sold", "");
+            drop[0].setForeground(PlannerUi.MUTED);
+            drop[0].setToolTipText(PlannerUi.fit("Its products count as dropped (worth nothing): right-click > Sell by to sell "
+                + "or alch them instead"));
+        }
         // The other way pays more for what it makes (high alch over the GE, or the other way round): say so; the
         // milestone's Sell by picks
         if (!s.done && row != null && calc.showPrices() && row.geEach != null && row.alchEach != null && row.needed > 0) {
             boolean alchBetter = row.alchEach > row.geEach;
-            if (alchBetter != row.alchWins) {
+            if (alchBetter != row.alchWins && !row.dropped) {
                 long more = Math.round(Math.abs(row.alchEach - row.geEach) * Math.max(0, row.needed - row.kept));
                 JLabel[] better = card.line((alchBetter ? "High alch" : "The GE") + " pays " + PlannerPanel.gp(more) + " more",
                     "Sell by");
@@ -3297,30 +3368,18 @@ final class PlannerCalculatorView {
                 tip = "Your " + consumer + " plan no longer needs " + supply.item + " (it's past them, or uses something "
                     + "else): right-click > Stop keeping to sell what this makes";
             } else if (toGet == 0) {
-                kept = card.line("Have the " + PlannerPanel.gp(wanted) + " for " + consumer, "");
+                kept = card.line("Have the " + PlannerPanel.gp(wanted) + " " + consumer + " needs", "");
                 kept[0].setForeground(PlannerUi.READY);
                 tip = "You have the " + supply.item + " your " + consumer + " plan still needs";
-            } else if (s.done) {
-                suppliesLeft = true;
-                kept = card.line("Levels done another way: get " + PlannerPanel.gp(toGet), "for " + consumer);
-                kept[0].setForeground(HudColors.WARN);
-                kept[1].setForeground(HudColors.WARN);
-                tip = "You reached its levels with another method, so the " + supply.item + " for your " + consumer + " plan "
-                    + "weren't made: " + String.format("%,d", toGet) + " still to get (you have " + String.format("%,d", have) + ")";
-            } else if (toGet > levelsMake) {
-                kept = card.line(PlannerPanel.gp(toGet) + " for " + consumer, PlannerPanel.gp(toGet - levelsMake) + " past its levels");
-                kept[0].setForeground(GATHER_BLUE);
-                kept[1].setForeground(HudColors.WARN);
-                tip = "Your " + consumer + " plan still needs " + String.format("%,d", toGet) + " " + supply.item + "; this "
-                    + "milestone's levels only take " + String.format("%,d", levelsMake) + ", so keep going past its end or get "
-                    + "the rest another way";
             } else {
-                kept = card.line(PlannerPanel.gp(toGet) + " of these for " + consumer, toGet < levelsMake ? "rest is levels" : "not sold");
+                suppliesLeft = s.done;
+                kept = card.line(consumer + ": have " + PlannerPanel.gp(have) + " of " + PlannerPanel.gp(wanted), "kept");
                 kept[0].setForeground(GATHER_BLUE);
                 kept[1].setForeground(PlannerUi.MUTED);
-                tip = "Your " + consumer + " plan still needs " + String.format("%,d", toGet) + " " + supply.item + " (you have "
-                    + String.format("%,d", have) + "); they're kept, left out of this milestone's sales and net"
-                    + (toGet < levelsMake ? "; the other " + String.format("%,d", levelsMake - toGet) + " are for its levels" : "");
+                tip = "Your " + consumer + " plan still needs " + String.format("%,d", wanted) + " " + supply.item + " and you "
+                    + "have " + String.format("%,d", have) + ": this milestone gets the other " + String.format("%,d", toGet)
+                    + ", and ends wherever that takes your level (about " + step.to + "). They're kept, left out of its "
+                    + "sales and net";
             }
             kept[0].setToolTipText(PlannerUi.fit(tip));
         }
@@ -3395,13 +3454,16 @@ final class PlannerCalculatorView {
         }
         if (row != null && calc.showPrices() && (row.geEach != null || row.alchEach != null)) {
             // How its products count: on the GE, high alched, or the setting's way (the better one marked)
-            if (row.geEach != null && row.alchEach != null && !s.done) {
+            if (!s.done) {
                 javax.swing.JMenu sell = new javax.swing.JMenu("Sell by");
-                boolean alchBetter = row.alchEach > row.geEach;
+                double geNow = row.geEach == null ? 0 : row.geEach;
+                double alchNow = row.alchEach == null ? 0 : row.alchEach;
+                boolean alchBetter = alchNow > geNow;
                 String[][] ways = {
                     {null, "The setting (" + calc.sellBy() + ")"},
-                    {"GE", "Grand Exchange: " + String.format("%,.0f", row.geEach) + " each" + (alchBetter ? "" : "  (pays more)")},
-                    {"ALCH", "High alch: " + String.format("%,.0f", row.alchEach) + " each" + (alchBetter ? "  (pays more)" : "")},
+                    {"GE", "Grand Exchange: " + String.format("%,.0f", geNow) + " each" + (alchBetter ? "" : "  (pays more)")},
+                    {"ALCH", "High alch: " + String.format("%,.0f", alchNow) + " each" + (alchBetter ? "  (pays more)" : "")},
+                    {"DROP", "Drop them (powerlevel): nothing"},
                 };
                 for (String[] way : ways) {
                     javax.swing.JCheckBoxMenuItem item = new javax.swing.JCheckBoxMenuItem(way[1],
