@@ -2,6 +2,10 @@
 
 Each version's changes, newest first.
 
+## 1.5.0 (2026-11-03)
+
+- Planner: estimated rates rebuilt from the OSRS Wiki's training and money making guides (darts about 75,000 an hour, ammo 30,000-45,000, smithing by bars, furnace bars by metal, construction by planks...), with the faster ways it gives (1-tick karambwans and pyres, 2- and 1.5-tick teaks, 3-tick mining and fishing, clicking darts and bolts, Smiths' uniform, Blast Furnace, double mould, tick-perfect knights, chinchompas...)
+
 ## 1.4.1 (2026-11-03)
 
 - Planner: take the tracker's plan into yours (Take on the plan's tracker row; Use the tracker's plan on the goal card), the reverse of Send
