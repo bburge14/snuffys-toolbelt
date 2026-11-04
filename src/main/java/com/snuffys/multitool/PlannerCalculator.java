@@ -428,7 +428,7 @@ class PlannerCalculator {
         return value;
     }
 
-    /** What the plans count products as worth (Sell Products By). */
+    /** What the plans count products as worth (Sell By). */
     PlannerConfig.SellBy sellBy() {
         return config.plannerSellBy();
     }
@@ -965,10 +965,12 @@ class PlannerCalculator {
         /** One sold on the GE (after tax), and one high alched (less a nature rune); null when it has none. */
         Double geEach;
         Double alchEach;
-        /** {@link #earnEach} is the alch value (alching pays more, or Sell Products By says to). */
+        /** {@link #earnEach} is the alch value (alching pays more, or Sell By says to). */
         boolean alchWins;
         /** Its products are dropped (powerlevelling): worth nothing. */
         boolean dropped;
+        /** Its estimated rate is the quicker dropping one (no bank trips). */
+        boolean droppedFaster;
         /** How many you have or can make from what you own. */
         int have;
         /** The guide's method at your level is this. */
@@ -999,6 +1001,10 @@ class PlannerCalculator {
             return earnEach == null ? null : earnEach * Math.max(0, count - kept);
         }
     }
+
+    /** Gathering that's quicker dropping than banking, and by how much (no bank trips). */
+    private static final Set<Skill> DROP_FASTER = java.util.EnumSet.of(Skill.WOODCUTTING, Skill.MINING, Skill.FISHING);
+    static final double DROP_SPEEDUP = 1.2;
 
     /** Skills whose actions gather what they're named after (logs, ore, fish, creatures), worth its GE price. */
     private static final Set<Skill> GATHERING = java.util.EnumSet.of(Skill.WOODCUTTING, Skill.MINING, Skill.FISHING,
@@ -1098,7 +1104,15 @@ class PlannerCalculator {
                 way = ways.isEmpty() ? null : ways.get(0);
             }
             if (way != null && row.xpEach > 0) {
-                row.xpHour = (int) Math.round(way.perHour * row.xpEach);
+                double perHour = way.perHour;
+                // Dropping what you gather (powerlevelling) skips the bank trips: about a fifth quicker for logs, ore
+                // and fish (the normal pace counts banking; the faster ways already drop)
+                PlannerConfig.SellBy by = sell != null ? sell : selling.by;
+                if (by == PlannerConfig.SellBy.DROP && DROP_FASTER.contains(skill) && PlannerRates.NORMAL.equals(way.name)) {
+                    perHour *= DROP_SPEEDUP;
+                    row.droppedFaster = true;
+                }
+                row.xpHour = (int) Math.round(perHour * row.xpEach);
                 row.estimated = row.xpHour > 0;
                 row.pace = row.estimated ? way.name : null;
             }
@@ -1129,7 +1143,7 @@ class PlannerCalculator {
     }
 
     /**
-     * How the plans count products: the Sell Products By setting, each item's high alch value and a nature rune's
+     * How the plans count products: the Sell By setting, each item's high alch value and a nature rune's
      * price. Set by the Calculator before it works things out; on its own (the tests), GE prices only.
      */
     static final class Selling {
