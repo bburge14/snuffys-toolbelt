@@ -460,6 +460,17 @@ class PlannerCalculator {
      * What the goal is set to train in the Skilling Helper: its Track for goal pick ("Blessed bone shards") or the
      * method picked on its card; null for neither (it follows the suggestion, or an exported plan).
      */
+    /** What the Skilling Helper's goal follows for the skill (its Follow), or null for the usual order. */
+    SkillGoals.Follow follow(Skill skill) {
+        return canPlan() && trackerInstalled() ? SkillGoals.follow(configManager, skill) : null;
+    }
+
+    void setFollow(Skill skill, SkillGoals.Follow follow) {
+        if (canPlan() && trackerInstalled()) {
+            SkillGoals.setFollow(configManager, skill, follow);
+        }
+    }
+
     String goalPick(Skill skill) {
         if (!canPlan() || !trackerInstalled()) {
             return null;

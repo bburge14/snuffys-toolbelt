@@ -2,6 +2,11 @@
 
 Each version's changes, newest first.
 
+## 1.6.0 (2026-11-03)
+
+- Tracker and Planner: Follow per skill (your plan, your pick for a one-off, the wiki, or the usual order) on both goal cards, the others kept to switch back; sending a plan follows it, a pick follows the pick. Supply milestones go by what the other plan still needs: passed another way they stay open (Levels done, supplies to get), and say how many are for the other plan and how many for their levels
+- Planner and tracker: sending a plan clears a Track for goal pick too (it came before the plan, so the tracker kept suggesting it); the goal card says when a pick is what the tracker follows, with Follow the plan instead
+
 ## 1.5.1 (2026-11-03)
 
 - Planner: no tooltip wider than about 300 px (every one goes through PlannerUi.fit: long lines wrap, short ones keep their size), shorter milestone and breakdown hints. Installer: shows why a download failed (the cause inside WebClient's error, saved to %TEMP%), and tries github.com and PowerShell when codeload fails
