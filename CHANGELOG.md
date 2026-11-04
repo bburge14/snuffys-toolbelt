@@ -2,6 +2,11 @@
 
 Each version's changes, newest first.
 
+## 1.4.1 (2026-11-03)
+
+- Planner: take the tracker's plan into yours (Take on the plan's tracker row; Use the tracker's plan on the goal card), the reverse of Send
+- Planner: other skills' plans as a heading and a grid of links (the wrapping row drew over the line below it)
+
 ## 1.4.0 (2026-11-03)
 
 - Planner: every Calculator tooltip in sections (whole plan with recorded sales, goal, plans, money plan, real trades, money per milestone, supplies, materials, banked, bonuses). Installer: rebuilt only when its source changes (the same file each release, so Windows' download reputation builds up); the README and release notes say how to get past Edge's and SmartScreen's warnings
