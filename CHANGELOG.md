@@ -2,6 +2,10 @@
 
 Each version's changes, newest first.
 
+## 1.5.1 (2026-11-03)
+
+- Planner: no tooltip wider than about 300 px (every one goes through PlannerUi.fit: long lines wrap, short ones keep their size), shorter milestone and breakdown hints. Installer: shows why a download failed (the cause inside WebClient's error, saved to %TEMP%), and tries github.com and PowerShell when codeload fails
+
 ## 1.5.0 (2026-11-03)
 
 - Planner: estimated rates rebuilt from the OSRS Wiki's training and money making guides (darts about 75,000 an hour, ammo 30,000-45,000, smithing by bars, furnace bars by metal, construction by planks...), with the faster ways it gives (1-tick karambwans and pyres, 2- and 1.5-tick teaks, 3-tick mining and fishing, clicking darts and bolts, Smiths' uniform, Blast Furnace, double mould, tick-perfect knights, chinchompas...)
