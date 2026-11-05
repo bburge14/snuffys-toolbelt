@@ -59,17 +59,27 @@ class PlannerPlanOverlay extends OverlayPanel {
         addMenuEntry(net.runelite.api.MenuAction.RUNELITE_OVERLAY, "Unpin", "Plan", e -> calc.setPinnedPlanSkill(null));
     }
 
+    // Only when the plan is linked to a Skilling Helper goal (sent to it, and the goal follows the plan) does its pinned
+    // skill card show it instead; any other plan has this card, Skilling Helper or not
+    private boolean linkedToGoal(Skill skill) {
+        if (!calc.trackerInstalled() || calc.trackedPlan(skill) == null) {
+            return false;
+        }
+        // (no Follow set: the usual order, where a sent plan is what it follows)
+        SkillGoals.Follow follow = calc.follow(skill);
+        return follow == null || follow == SkillGoals.Follow.PLAN;
+    }
+
     @Override
     public Dimension render(Graphics2D graphics) {
-        if (!config.plannerPlanOverlay() || client.getGameState() != GameState.LOGGED_IN || calc.trackerInstalled()
-            || !calc.canPlan()) {
+        if (!config.plannerPlanOverlay() || client.getGameState() != GameState.LOGGED_IN || !calc.canPlan()) {
             return null;
         }
         // A pinned plan stays up; otherwise the plan of the skill you're training
         Skill pinned = calc.pinnedPlanSkill();
         Skill skill = pinned != null ? pinned : calc.lastTrained();
         SkillPlans.Plan plan = skill == null ? null : calc.plan(skill);
-        if (plan == null || plan.steps.isEmpty()) {
+        if (plan == null || plan.steps.isEmpty() || linkedToGoal(skill)) {
             return null;
         }
         if (runeLiteConfig != null) {
@@ -82,7 +92,14 @@ class PlannerPlanOverlay extends OverlayPanel {
         String name = plan.name != null ? plan.name : "plan";
         panelComponent.getChildren().add(TitleComponent.builder().text(skill.getName() + ": " + name).color(TITLE).build());
 
-        SkillPlans.Step step = plan.milestone(level);
+        // (past supply milestones whose supplies you have all of)
+        java.util.Set<String> got = new java.util.HashSet<>();
+        for (SkillPlans.Step s : plan.steps) {
+            if (s.gotAll) {
+                got.add(s.action.toLowerCase(java.util.Locale.ROOT));
+            }
+        }
+        SkillPlans.Step step = plan.milestone(level, got);
         if (step == null) {
             line("Plan done", "level " + level, HudColors.GOOD);
             return super.render(graphics);
@@ -116,7 +133,7 @@ class PlannerPlanOverlay extends OverlayPanel {
         if (!full) {
             return super.render(graphics);
         }
-        SkillPlans.Step next = on ? plan.milestone(step.to) : null;
+        SkillPlans.Step next = on ? plan.milestone(step.to, got) : null;
         if (next != null && next != step) {
             line("Next:", next.action + " (" + next.from + " → " + next.to + ")", SOFT);
         }

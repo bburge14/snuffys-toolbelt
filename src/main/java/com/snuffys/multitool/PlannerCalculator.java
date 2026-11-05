@@ -159,9 +159,37 @@ class PlannerCalculator {
         return geLimits == null ? new long[2] : geLimits.traded(names, since);
     }
 
-    /** Changes when a trade is recorded. */
+    /** Changes when a trade is recorded (or where an item came from). */
     int tradesVersion() {
-        return geLimits == null ? 0 : geLimits.tradesVersion();
+        return (geLimits == null ? 0 : geLimits.tradesVersion()) * 31 + (origins == null ? 0 : origins.version());
+    }
+
+    // Where your items came from (bought, traded, got yourself); null in the preview
+    @Inject
+    private PlannerOrigins origins;
+
+    /** Where an item you have came from, as far as it knows (null: nothing known). */
+    PlannerOrigins.Origin origin(int itemId) {
+        return origins == null || itemId <= 0 ? null : origins.of(itemId);
+    }
+
+    /** Records by hand where some of an item came from: bought for {@code gp} in all, or got yourself. */
+    void recordOrigin(int itemId, long quantity, long gp, boolean bought) {
+        if (origins == null || itemId <= 0 || !canPlan()) {
+            return;
+        }
+        if (bought) {
+            origins.bought(itemId, quantity, gp);
+        } else {
+            origins.gathered(itemId, quantity);
+        }
+    }
+
+    /** Clears what it knows of where an item came from. */
+    void forgetOrigin(int itemId) {
+        if (origins != null && itemId > 0 && canPlan()) {
+            origins.forget(itemId);
+        }
     }
 
     /** How many buy limits are known so far (for redrawing when one comes in). */
@@ -838,6 +866,23 @@ class PlannerCalculator {
         return canPlan() && trackerInstalled() && SkillPlans.isTracked(configManager, skill, plan);
     }
 
+    /** Saves where each supply milestone stands, for the Skilling Helper (only when it changed). */
+    void saveSupplyStates(Skill skill, Map<String, SkillPlans.SupplyState> states) {
+        if (configManager.getRSProfileKey() != null) {
+            SkillPlans.setSupplyStates(configManager, skill, states);
+        }
+    }
+
+    /**
+     * Saves the tracker's copy of a plan after the Planner moved its supply milestones to follow your supplies (the link
+     * a send or take made stays live for them, even while your own copy has unsent edits).
+     */
+    void saveTrackedSupplies(Skill skill, SkillPlans.Plan tracked) {
+        if (canPlan() && trackerInstalled()) {
+            configManager.setRSProfileConfiguration(GROUP, SkillPlans.TRACKED_KEY + skill.name(), SkillPlans.encode(tracked));
+        }
+    }
+
     /**
      * Saves a change the Planner made by itself (a supply milestone's end following its supplies): when the tracker had
      * the plan as it was, it gets the change too, so it isn't left as an unsent edit of yours.
@@ -1421,11 +1466,26 @@ class PlannerCalculator {
                                   int xpNow, RecipeData recipes, TrainingData training, ToIntFunction<String> price,
                                   IntUnaryOperator itemPrice) {
         List<StepRow> out = new ArrayList<>();
+        // (a supply milestone ends partway into a level, exactly where its supplies take you: the one after it starts
+        // there, so no XP is counted twice)
+        SkillPlans.Step previous = null;
         for (SkillPlans.Step step : plan.steps) {
             int start = Math.max(xpNow, Experience.getXpForLevel(step.from));
-            int end = Experience.getXpForLevel(Math.min(99, step.to));
+            if (step.gotAll || step.covered) {
+                // (all its supplies got, or a level the supplies before it take you past: done, and no XP of its own)
+                out.add(new StepRow(step, CalculatorData.named(calc, step.action), null, 0, true));
+                out.get(out.size() - 1).progress = 1;
+                continue;
+            }
+            if (previous != null && previous.endXp > 0 && previous.to == step.from) {
+                start = (int) Math.max(start, Math.min(Experience.MAX_SKILL_XP, previous.endXp));
+            }
+            int end = step.endXp > 0 ? (int) Math.min(Experience.MAX_SKILL_XP, step.endXp)
+                : Experience.getXpForLevel(Math.min(99, step.to));
+            end = Math.max(end, start);
+            previous = step;
             CalculatorData.Action action = CalculatorData.named(calc, step.action);
-            boolean done = xpNow >= end;
+            boolean done = xpNow >= end || step.gotAll;
             Row row = action == null ? null : row(skill, action, on, start, end, Math.max(step.from,
                 CalculatorData.level(xpNow, false)), recipes, training, Collections.emptyMap(), price, itemPrice, step.pace, step.sellBy);
             if (row != null) {
