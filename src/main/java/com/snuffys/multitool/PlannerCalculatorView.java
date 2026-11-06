@@ -1583,6 +1583,7 @@ final class PlannerCalculatorView {
         }
         List<PlannerCalculator.StepRow> steps = PlannerCalculator.stepRows(shown, skillCalc, on, plan, now, recipes, training,
             this::price, calc::itemPrice);
+        yourRate(shown, plan, steps, level);
         PlannerCalculator.Totals totals = PlannerCalculator.totals(plan, steps, now);
 
         int endLevel = Math.min(plan.goal, Math.max(totals.endLevel, level));
@@ -1766,7 +1767,7 @@ final class PlannerCalculatorView {
     // Null when nothing's recorded for it
     private static SoFar soFar(PlannerCalculator.StepRow s) {
         PlannerCalculator.Row row = s.row;
-        if (row == null || s.step.sold <= 0 && s.step.alched <= 0) {
+        if (row == null || s.step.sold <= 0 && s.step.alched <= 0 && s.step.dropped <= 0) {
             return null;
         }
         SoFar out = new SoFar();
@@ -1777,7 +1778,7 @@ final class PlannerCalculatorView {
         double alch = s.step.alchedEach > 0 ? s.step.alchedEach : row.alchEach != null ? row.alchEach : 0;
         out.sold = s.step.sold * ge;
         out.alched = s.step.alched * alch;
-        out.left = Math.max(0, out.made - s.step.sold - s.step.alched);
+        out.left = Math.max(0, out.made - s.step.sold - s.step.alched - s.step.dropped);
         out.unsold = row.earnEach == null ? 0 : out.left * row.earnEach;
         out.cost = row.costEach == null ? 0 : row.costEach * out.made;
         return out;
@@ -1962,6 +1963,10 @@ final class PlannerCalculatorView {
                     box.add(breakdownLine("  Alched " + String.format("%,d", s.step.alched),
                         PlannerPanel.gp(Math.round(done.alched)), PlannerUi.MUTED, new Color(150, 210, 150)));
                 }
+                if (s.step.dropped > 0) {
+                    box.add(breakdownLine("  Dropped " + String.format("%,d", s.step.dropped), "0", PlannerUi.MUTED,
+                        PlannerUi.MUTED));
+                }
                 if (done.left > 0) {
                     box.add(breakdownLine("  Not sold yet " + String.format("%,d", done.left) + " (worth now)",
                         PlannerPanel.gp(Math.round(done.unsold)), PlannerUi.MUTED, PlannerUi.MUTED));
@@ -2084,7 +2089,8 @@ final class PlannerCalculatorView {
         JLabel budgetLink = PlannerUi.linkLabel(set > 0 ? "Budget: " + PlannerPanel.gp(set) : "Set a budget",
             "How much this plan may use (the rest of your cash is left alone)", () -> askBudget(shown, coins));
         boolean folded = calc.planFolded("money");
-        String summary = money.runsOut != null ? "short " + PlannerPanel.gp(Math.max(0, needed - budget)) : "enough";
+        // (short: the header has the budget link too)
+        String summary = money.runsOut != null ? "short " + PlannerPanel.gp(Math.max(0, needed - budget)) : "ok";
         list.add(section("money", "Money plan", summary, budgetLink));
         if (folded) {
             return;
@@ -2333,7 +2339,7 @@ final class PlannerCalculatorView {
             return null;
         }
         int at = CalculatorData.level(Math.max(0, calc.xp(source.skill)), false);
-        return source.action.level > at ? source.skill.getName() + " " + source.action.level + " (you're " + at + ")" : null;
+        return source.action.level > at ? source.skill.getName() + " " + source.action.level + " (now " + at + ")" : null;
     }
 
     // "Firemaking" from a saved skill's name
@@ -3139,6 +3145,40 @@ final class PlannerCalculatorView {
         return new long[] {gp, market};
     }
 
+    // The milestone you're on, in a plan linked to your Skilling Helper goal (you sent it, the goal follows it): timed
+    // at your XP an hour as the tracker counts it while you train, not the guide's rate
+    private void yourRate(Skill shown, SkillPlans.Plan plan, List<PlannerCalculator.StepRow> steps, int level) {
+        int rate = currentOverride == null ? calc.trackerXpRate(shown) : 0;
+        SkillPlans.Plan tracked = rate > 0 ? calc.trackedPlan(shown) : null;
+        SkillGoals.Follow follow = tracked == null ? null : calc.follow(shown);
+        if (tracked == null || !(plan.sent || calc.isTracked(shown, plan))
+            || follow != null && follow != SkillGoals.Follow.PLAN) {
+            return;
+        }
+        for (PlannerCalculator.StepRow s : steps) {
+            if (!s.done && s.row != null && s.step.covers(level)) {
+                s.row.seconds = (long) Math.ceil(s.xp * 3600.0 / rate);
+                s.row.xpHour = rate;
+                s.row.estimated = false;
+                s.yourRate = true;
+            }
+        }
+    }
+
+    // A milestone's note short enough for its card ("to reach 60 for the Firemaking supply": "Climb for Firemaking
+    // (60)"); the whole note is in its tooltip
+    static String shortNote(String note) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("^to reach (\\d+) for the (.+) supply$").matcher(note);
+        if (m.matches()) {
+            return "Climb for " + m.group(2) + " (" + m.group(1) + ")";
+        }
+        m = java.util.regex.Pattern.compile("^to reach (\\d+) for (.+)$").matcher(note);
+        if (m.matches()) {
+            return "Climb to " + m.group(1) + " for " + m.group(2);
+        }
+        return note;
+    }
+
     // Whether the plan ends with a supply milestone, its goal where that ends (the goal is the supplies, not a level)
     private static boolean endsInSupplies(SkillPlans.Plan plan) {
         SkillPlans.Step last = null;
@@ -3700,6 +3740,9 @@ final class PlannerCalculatorView {
             : step.gotAll ? "Done: have all the supplies"
             : step.covered ? "Done by the supplies before it"
             : s.done ? "Done (you're level " + level + ")"
+            // (a minigame is timed by the hour: what's left of it, in play time)
+            : row != null && s.action != null && s.action.minigame && row.seconds > 0
+                ? "~" + PlannerPanel.formatDuration(row.seconds) + " to play" + (started ? " · " + percent + "%" : "")
             : row != null ? String.format("%,d", row.needed) + " to go" + (started ? " · " + percent + "%" : "")
             : (started ? percent + "% done" : "");
         PlannerUi.Card card = new PlannerUi.Card(step.action, left, s.done ? "" : PlannerPanel.gp(s.xp) + " xp");
@@ -3709,8 +3752,13 @@ final class PlannerCalculatorView {
         card.right.setForeground(Color.WHITE);
         if (row != null && !s.done) {
             Double perXp = calc.showPrices() ? row.perXp() : null;
+            // (the rate's source word only when there's room: with a gp/xp beside it, the tooltip says it)
+            String source = s.yourRate ? " yours" : row.estimated ? " est." : "";
+            if (perXp != null) {
+                source = "";
+            }
             String time = row.seconds > 0 ? "~" + PlannerPanel.formatDuration(row.seconds)
-                + (row.xpHour > 0 ? " (" + PlannerPanel.gp(row.xpHour) + "/hr" + (row.estimated ? " est." : "") + ")" : "")
+                + (row.xpHour > 0 ? " (" + PlannerPanel.gp(row.xpHour) + "/hr" + source + ")" : "")
                 : "no XP rate";
             card.third(s.tooLow() ? "needs level " + s.action.level : time, perXp == null ? "" : gpPerXp(perXp));
             if (s.tooLow()) {
@@ -3724,7 +3772,8 @@ final class PlannerCalculatorView {
             }
         }
         if (step.note != null) {
-            card.line(step.note, "");
+            JLabel[] noteLine = card.line(shortNote(step.note), "");
+            noteLine[0].setToolTipText(PlannerUi.fit(step.note));
         }
         if (row != null && row.dropped && !s.done) {
             JLabel[] drop = card.line("Dropped (powerlevel)", row.droppedFaster ? "+20% rate" : "");
@@ -3732,6 +3781,26 @@ final class PlannerCalculatorView {
             drop[0].setToolTipText(PlannerUi.fit("Its products count as dropped (worth nothing)" + (row.droppedFaster
                 ? ", and its estimated rate is about 20% quicker: no bank trips" : "") + ". Right-click > Sell by to sell or alch "
                 + "them instead"));
+        }
+        // You've been dropping what it makes (seen as you drop them) while it's timed and priced as sold: suggest timing
+        // it as dropped (quicker: no bank trips); a click does it
+        if (row != null && !row.dropped && !s.done && step.dropped >= 28 && step.dropped > step.sold + step.alched) {
+            JLabel[] hint = card.line("Dropping these? Use Drop", "");
+            hint[0].setForeground(HudColors.WARN);
+            hint[0].setToolTipText(PlannerUi.fit("You've dropped " + String.format("%,d", step.dropped) + " of what it made"
+                + " (sold " + String.format("%,d", step.sold) + ", alched " + String.format("%,d", step.alched) + "). Click to"
+                + " count them as dropped: its time uses the quicker drop rate (no bank trips) and it sells nothing"));
+            hint[0].setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+            hint[0].addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    change(shown, p -> {
+                        if (index < p.steps.size()) {
+                            p.steps.get(index).sellBy = "DROP";
+                        }
+                    });
+                }
+            });
         }
         // The other way pays more for what it makes (high alch over the GE, or the other way round): say so; the
         // milestone's Sell by picks
@@ -3758,7 +3827,7 @@ final class PlannerCalculatorView {
                 recipes, calc.owned())) {
                 String waiting = waitingOn(shown, need);
                 if (waiting != null) {
-                    JLabel[] wait = card.line("Waiting on " + waiting, "");
+                    JLabel[] wait = card.line("Needs " + waiting, "");
                     wait[0].setForeground(HudColors.WARN);
                     wait[0].setToolTipText(PlannerUi.fit(PlannerUi.esc(need.name) + " comes from " + waiting + ": train that first"));
                     break;
@@ -3941,7 +4010,7 @@ final class PlannerCalculatorView {
             if (row.seconds > 0) {
                 tip.row("Time", "~" + PlannerPanel.formatDuration(row.seconds) + (row.estimated ? " (est.)" : ""));
                 tip.row("Rate", String.format("%,d", row.xpHour) + " xp/hr", row.estimated ? PlannerUi.Tip.WARN : null);
-                tip.row("Rate from", row.estimated ? (row.pace != null && !PlannerRates.NORMAL.equals(row.pace)
+                tip.row("Rate from", s.yourRate ? "your XP/hr now (Skilling Helper)" : row.estimated ? (row.pace != null && !PlannerRates.NORMAL.equals(row.pace)
                     ? row.pace + " pace (estimate)" : "a typical pace (estimate)") : "the wiki's training guide",
                     PlannerUi.Tip.MUTED);
             }
@@ -3964,12 +4033,15 @@ final class PlannerCalculatorView {
                 }
                 SoFar done = soFar(s);
                 if (done != null) {
-                    tip.section("So far (recorded)");
+                    tip.section("So far (seen, or recorded)");
                     tip.row("Made", String.format("%,d", done.made));
                     tip.row("Sold on the GE", String.format("%,d", s.step.sold) + "  " + PlannerPanel.gp(Math.round(done.sold)),
                         PlannerUi.Tip.GOOD);
                     tip.row("High alched", String.format("%,d", s.step.alched) + "  " + PlannerPanel.gp(Math.round(done.alched)),
                         PlannerUi.Tip.GOOD);
+                    if (s.step.dropped > 0) {
+                        tip.row("Dropped", String.format("%,d", s.step.dropped) + "  0", PlannerUi.Tip.MUTED);
+                    }
                     if (done.left > 0) {
                         tip.row("Not sold yet", String.format("%,d", done.left) + "  worth " + PlannerPanel.gp(Math.round(done.unsold)),
                             PlannerUi.Tip.MUTED);

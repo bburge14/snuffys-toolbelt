@@ -159,6 +159,14 @@ class PlannerCalculator {
         return geLimits == null ? new long[2] : geLimits.traded(names, since);
     }
 
+    /**
+     * Your XP an hour in a skill from the Skilling Helper's tracker (it runs, and you're training it now), for a plan
+     * linked to its goal; 0 otherwise. The Planner never shows a rate of its own: it times the plan by this.
+     */
+    int trackerXpRate(Skill skill) {
+        return family == null || !canPlan() ? 0 : family.xpRate(skill);
+    }
+
     /** Changes when a trade is recorded (or where an item came from). */
     int tradesVersion() {
         return (geLimits == null ? 0 : geLimits.tradesVersion()) * 31 + (origins == null ? 0 : origins.version());
@@ -171,6 +179,62 @@ class PlannerCalculator {
     /** Where an item you have came from, as far as it knows (null: nothing known). */
     PlannerOrigins.Origin origin(int itemId) {
         return origins == null || itemId <= 0 ? null : origins.of(itemId);
+    }
+
+    /**
+     * You sold, alched or dropped something (client thread, from {@link PlannerOrigins}): counted on the plan
+     * milestone that makes it (in the skill you're training it in: the one you're on, else the latest you've reached),
+     * as Record sales... does by hand, so its money so far is what really happened.
+     */
+    void recordGone(int itemId, long quantity, long gp, PlannerOrigins.Gone how) {
+        if (!canPlan() || itemManager == null || quantity <= 0) {
+            return;
+        }
+        String name;
+        try {
+            name = itemManager.getItemComposition(itemId).getName();
+        } catch (RuntimeException e) {
+            return;
+        }
+        for (Skill skill : Skill.values()) {
+            SkillPlans.Plan plan = plan(skill);
+            if (plan == null) {
+                continue;
+            }
+            int level = Experience.getLevelForXp(Math.max(0, xp(skill)));
+            SkillPlans.Step best = null;
+            for (SkillPlans.Step step : plan.steps) {
+                if (step.action == null || !step.action.equalsIgnoreCase(name) || step.from > level) {
+                    continue;
+                }
+                if (best == null || step.covers(level) || !best.covers(level) && step.from > best.from) {
+                    best = step;
+                }
+            }
+            if (best == null) {
+                continue;
+            }
+            SkillPlans.Plan before = plan.copy();
+            switch (how) {
+                case SOLD:
+                    // (what each went for, averaged with what was recorded before)
+                    best.soldEach = ((best.soldEach > 0 ? best.soldEach : (double) gp / quantity) * best.sold + gp)
+                        / (best.sold + quantity);
+                    best.sold += quantity;
+                    break;
+                case ALCHED:
+                    best.alchedEach = ((best.alchedEach > 0 ? best.alchedEach : (double) gp / quantity) * best.alched + gp)
+                        / (best.alched + quantity);
+                    best.alched += quantity;
+                    break;
+                default:
+                    best.dropped += quantity;
+                    break;
+            }
+            savePlanQuietly(skill, plan, before);
+            view.update();
+            return;
+        }
     }
 
     /** Records by hand where some of an item came from: bought for {@code gp} in all, or got yourself. */
@@ -1141,7 +1205,8 @@ class PlannerCalculator {
         PlannerRates.Way way = pace == null || PlannerRates.GUIDE.equals(pace) ? null
             : PlannerRates.way(PlannerRates.ways(skill, action, made), pace);
         if (method != null && way == null) {
-            row.xpHour = method.xpHour;
+            // (a minigame's rate by your level: the wiki's at the levels it gives, in a straight line between)
+            row.xpHour = method.xpHourAt(Math.max(level, action.level));
             row.pace = PlannerRates.GUIDE;
         } else {
             if (way == null) {
@@ -1177,7 +1242,7 @@ class PlannerCalculator {
         Map<String, Integer> out = new java.util.LinkedHashMap<>();
         TrainingData.Method method = training == null ? null : rated(training, skill, action, level);
         if (method != null) {
-            out.put(PlannerRates.GUIDE, method.xpHour);
+            out.put(PlannerRates.GUIDE, method.xpHourAt(Math.max(level, action.level)));
         }
         List<RecipeData.Recipe> made = recipes == null ? Collections.emptyList() : recipesFor(skill, action, recipes);
         double each = CalculatorData.xpEach(action, on);
@@ -1425,6 +1490,8 @@ class PlannerCalculator {
         double progress;
         /** Actions for the whole milestone, start to end (0 without an action): with {@code row.needed}, how many are done. */
         long total;
+        /** Its time is at your XP an hour from the Skilling Helper (the milestone you're on, its plan linked to your goal). */
+        boolean yourRate;
 
         StepRow(SkillPlans.Step step, CalculatorData.Action action, Row row, int xp, boolean done) {
             this.step = step;

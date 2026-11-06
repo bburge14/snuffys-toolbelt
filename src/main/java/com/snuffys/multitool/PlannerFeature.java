@@ -80,11 +80,15 @@ class PlannerFeature {
         lifecycle.load(recipeData, recipeData::load);
         lifecycle.load(trainingData, trainingData::load);
         lifecycle.load(locationData, locationData::load);
+        // The guides' minigames with the wiki's rates (Wintertodt, Tempoross...) as Calculator actions, by the hour
+        calculatorData.addMinigames(trainingData);
         // (BirdhouseTracker notes when you seed a bird house, for the TIMERS line and its alert; the Skilling
         // Helper's hover card uses it too, and in the Toolbelt it's subscribed once)
         lifecycle.subscribe(questProgress, farmingTracker, birdhouseTracker, chores, timers, slayer, drops, plannerSound, calculator, geLimits, origins, this);
         // The plan on the game screen (unless it's linked to a Skilling Helper goal: its pinned card shows the plan then)
         lifecycle.overlay(planOverlay);
+        // What you sell, alch and drop counts on your plan's milestones, as Record sales... does by hand
+        origins.onGone(calculator::recordGone);
         chores.start();
         SwingUtilities.invokeLater(() -> {
             PlannerPanel.Icons pictures = icons();
@@ -101,6 +105,7 @@ class PlannerFeature {
             view.setPanel(panel::refresh);
         });
         lifecycle.onStop(() -> {
+            origins.onGone(null);
             view.setPanel(null);
             SwingUtilities.invokeLater(() -> {
                 if (navButton != null) {
